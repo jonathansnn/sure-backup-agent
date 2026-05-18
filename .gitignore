@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Logs and runtime
+logs/
+*.log
+FAILED_*.json
+
+# IDE / agentes
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets — defesa em profundidade. Secrets de verdade vão no Windows Credential Manager via keyring.
+.env
+*.local.toml
+secrets.toml

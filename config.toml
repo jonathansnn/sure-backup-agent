@@ -1,0 +1,54 @@
+# Configuração não-secret do sure-backup-agent.
+# Secrets (URL do Power Automate, senha do PPDM) ficam no Windows Credential Manager via keyring.
+
+[veeam]
+console_path = "C:\\Program Files\\Veeam\\Backup and Replication\\Console\\veeam.backup.shell.exe"
+window_title_regex = "Veeam Backup & Replication"
+launch_timeout_seconds = 120  # cold start do Veeam é lento
+# Crop em pixels relativo à janela maximizada. Defaults baseados em Veeam 12 em 1920x1080.
+# Ajustar se a área de dados ficar fora do esperado.
+crop_top = 165       # remove título + abas Home/View + ribbon
+crop_left = 200      # remove tree pane esquerda (Home > Jobs etc)
+crop_right = 0       # 0 = mantém todas as colunas até a direita
+crop_bottom = 60     # remove status bar inferior (~30-50px + borda)
+
+[ppdm]
+url = "https://192.168.20.200/"
+username = "readonly"
+login_timeout_seconds = 30
+browser = "chromium"
+headless = true
+viewport_width = 1600
+viewport_height = 900
+ignore_https_errors = true  # PPDM em IP interno = certificado self-signed
+
+[timeismoney]
+url = "https://web.timeismoney.tec.br/login"
+dashboard_url = "https://web.timeismoney.tec.br/admin-dashboard"
+username = "rootadmin@scale.com"
+login_timeout_seconds = 30
+browser = "chromium"
+headless = true
+viewport_width = 1600
+# viewport alta o suficiente pra anchor + valores abaixo caberem dentro do clip
+# (Playwright clampa clip pela viewport)
+viewport_height = 1100
+# Anchor de crop: texto único na página usado como bottom da captura.
+bottom_anchor_text = "Taxa de colaboradores ativos"
+# padding generoso pra cobrir o numero grande abaixo do titulo do card
+bottom_padding_px = 120
+
+[teams]
+http_timeout_seconds = 30
+retry_attempts = 3
+retry_backoff_seconds = 5
+
+[logging]
+log_dir = "logs"
+level = "INFO"
+
+[keyring]
+# Nomes dos targets no Windows Credential Manager
+service_ppdm = "sure-backup-agent/ppdm"
+service_timeismoney = "sure-backup-agent/timeismoney"
+service_teams_webhook = "sure-backup-agent/teams_webhook"
