@@ -257,76 +257,67 @@ Convenções do payload:
 
 ## Deploy multi-servidor (modo split)
 
-A partir da versão atual, suporta dividir as capturas entre 2 VMs quando o servidor que tem acesso ao Veeam **não** consegue alcançar o Time Is Money (ou vice-versa).
+Quando as VMs do Veeam e do Time Is Money estão em **redes diferentes** e não se enxergam, dá pra dividir as capturas usando Power Automate + OneDrive como ponte (ambas precisam de internet, não precisam se ver).
 
 ### Arquitetura
 
 ```
-[VM-TIM]  07:55  capture TIM ──► shared_artifact_dir/tim_image.png + tim_meta.json
-                                            ▲
-                                            │ pull
-[VM-V+P]  08:00  capture V+P  ──► lê TIM ──┘──► POST único pro Teams
+[VM-TIM]   07:55  ─POST─► Fluxo PA "Store TIM Artifact" ──► OneDrive
+                                                                │
+                                                                │ lê
+[VM-V+P]   08:00  ─POST─► Fluxo PA "Aggregate + Send"  ◄───────┘
+                                              │
+                                              └─► Teams (1 mensagem combinada)
 ```
 
-- **VM-TIM** (`mode = "timeismoney"`): só captura o dashboard do TIM, grava 2 arquivos no diretório compartilhado, **não** envia pro Teams.
-- **VM-V+P** (`mode = "veeam_ppdm"`): captura Veeam + PPDM, lê o artefato TIM do diretório, monta payload combinado e envia. É a VM "agregadora".
+**Princípio:** as 2 VMs nunca se comunicam diretamente. O Power Automate + OneDrive são o "rendezvous" em cloud que ambas alcançam.
 
-### Diretório compartilhado
+### 3 fluxos Power Automate
 
-Pode ser qualquer caminho acessível pelas 2 VMs (leitura na agregadora, escrita+leitura na TIM):
+| Modo | VM faz | Fluxo PA que recebe o POST | Função do fluxo |
+|---|---|---|---|
+| `all` (legado) | V+P+TIM single-server | **A — "Send Daily Full"** (atual) | Posta no Teams direto |
+| `timeismoney` | só TIM | **B — "Store TIM Artifact"** (novo) | Salva PNG no OneDrive, não posta |
+| `veeam_ppdm` | só V+P | **C — "Aggregate + Send"** (novo) | Lê TIM do OneDrive, combina, posta no Teams |
 
-- **UNC path:** `\\fileserver\share\sure-backup-agent\`
-- **Drive mapeado:** `Z:\sure-backup-agent\`
-- **OneDrive sincronizado:** pasta que existe em ambas com mesmo nome
-
-O contrato é simples — 2 arquivos:
-
-| Arquivo | Conteúdo |
-|---|---|
-| `tim_image.png` | bytes do PNG (zero bytes se a captura falhou) |
-| `tim_meta.json` | `{ "error": str, "timestamp": ISO8601 UTC, "hostname": str, "image_bytes": int }` |
-
-Escrita é **atômica** (write-temp + `os.replace`) — leitor nunca pega arquivo half-written. Definição em [`src/artifact_store.py`](src/artifact_store.py).
+**Setup completo dos fluxos B e C** em [docs/multi-server-pa-flows.md](docs/multi-server-pa-flows.md) — passo a passo com schemas, expressões e ações de cada fluxo.
 
 ### Configuração em cada VM
+
+Cada VM tem **uma só URL de webhook** no keyring (mesmo nome de secret em todas, valor diferente apontando pro fluxo correto):
 
 **VM-TIM** (`config.toml`):
 
 ```toml
 [mode]
 name = "timeismoney"
-shared_artifact_dir = '\\fileserver\share\sure-backup-agent'
 ```
 
-Secrets necessários (keyring): só `sure-backup-agent/timeismoney`.
+Keyring nessa VM:
+- `sure-backup-agent/teams_webhook` → URL do **Fluxo B**
+- `sure-backup-agent/timeismoney` → senha do admin TIM
 
 **VM-V+P** (`config.toml`):
 
 ```toml
 [mode]
 name = "veeam_ppdm"
-shared_artifact_dir = '\\fileserver\share\sure-backup-agent'
-artifact_max_age_minutes = 60   # TIM stale se >60min antigo
 ```
 
-Secrets necessários: `sure-backup-agent/teams_webhook` + `sure-backup-agent/ppdm`. **Não** precisa do TIM.
+Keyring nessa VM:
+- `sure-backup-agent/teams_webhook` → URL do **Fluxo C** (não o A!)
+- `sure-backup-agent/ppdm` → senha do PPDM readonly
 
-### Comportamento quando TIM falha ou está stale
+### Comportamento quando TIM falha ou está atrasada
 
-Se a VM-TIM travou, o artefato vai estar velho. O agregador detecta isso via timestamp e trata como **falha do TIM** com mensagem amigável no Teams:
-
-| Cenário | Mensagem no Teams |
-|---|---|
-| Artefato ausente | `"TIM artefato ausente em \\... (VM TIM rodou?)"` |
-| Artefato > max_age | `"TIM artefato stale (90min, limite 60min) — última captura: 2026-05-21T..."` |
-| TIM capturou mas falhou login | A mensagem original do erro (vinda do meta.json) |
-
-O Teams sempre recebe a mensagem com Veeam + PPDM funcionando, e o "card TIM" com PNG vermelho de erro — exatamente como o tratamento padrão de falha de captura.
+- **VM-TIM travou e nem rodou hoje:** Fluxo C lê do OneDrive a versão de ontem (ou nenhuma). Se você implementou o Passo 5 do guia (detecção de staleness), o Teams recebe Veeam+PPDM ok + aviso "TIM artefato eh do dia X".
+- **VM-TIM rodou mas captura falhou:** Fluxo B grava com `error="timeout ..."` no meta JSON. Fluxo C lê e renderiza a mensagem de erro no card TIM.
+- **Captura TIM OK:** PNG de hoje vai direto pra mensagem combinada.
 
 ### Schedule recomendado
 
 - VM-TIM: **07:55**
-- VM-V+P: **08:00** (5 minutos depois — dá tempo do TIM gravar)
+- VM-V+P: **08:00** (5 minutos depois — dá tempo do upload pro OneDrive completar, tipicamente <30s)
 
 O `install_task.ps1` já adapta o horário e o nome da tarefa baseado em `[mode].name`.
 

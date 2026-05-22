@@ -79,6 +79,63 @@ def build_payload(
     }
 
 
+def build_tim_only_payload(
+    timeismoney_image: Optional[bytes],
+    timeismoney_error: Optional[str],
+    vm_hostname: str,
+    timestamp: Optional[datetime] = None,
+) -> dict:
+    """Payload pro Fluxo B (Store TIM Artifact) — modo='timeismoney'.
+
+    Esse fluxo nao posta no Teams; ele salva o PNG do TIM no OneDrive
+    pra o Fluxo C (agregador) ler depois. Mesma convencao do build_payload:
+    image SEMPRE vem como PNG valido (gera placeholder vermelho se a
+    captura falhou), erro como string canonica.
+    """
+    raw_ts = timestamp or datetime.now(timezone.utc)
+    ts_utc_bare = raw_ts.astimezone(timezone.utc).replace(tzinfo=None)
+    tim_bytes = timeismoney_image if timeismoney_image else render_error_png(
+        "TIME IS MONEY", timeismoney_error or "erro desconhecido"
+    )
+    return {
+        "timeismoney_image_b64": base64.b64encode(tim_bytes).decode("ascii"),
+        "timeismoney_error": timeismoney_error or "",
+        "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
+        "vm_hostname": vm_hostname,
+    }
+
+
+def build_veeam_ppdm_payload(
+    veeam_image: Optional[bytes],
+    veeam_error: Optional[str],
+    ppdm_image: Optional[bytes],
+    ppdm_error: Optional[str],
+    vm_hostname: str,
+    timestamp: Optional[datetime] = None,
+) -> dict:
+    """Payload pro Fluxo C (Aggregate + Send) — modo='veeam_ppdm'.
+
+    O fluxo C tem V+P do payload e le TIM do OneDrive (gravado pelo Fluxo B
+    quando a VM-TIM rodou). Por isso o payload aqui NAO inclui campos TIM.
+    """
+    raw_ts = timestamp or datetime.now(timezone.utc)
+    ts_utc_bare = raw_ts.astimezone(timezone.utc).replace(tzinfo=None)
+    veeam_bytes = veeam_image if veeam_image else render_error_png(
+        "VEEAM", veeam_error or "erro desconhecido"
+    )
+    ppdm_bytes = ppdm_image if ppdm_image else render_error_png(
+        "PPDM", ppdm_error or "erro desconhecido"
+    )
+    return {
+        "veeam_image_b64": base64.b64encode(veeam_bytes).decode("ascii"),
+        "veeam_error": veeam_error or "",
+        "ppdm_image_b64": base64.b64encode(ppdm_bytes).decode("ascii"),
+        "ppdm_error": ppdm_error or "",
+        "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
+        "vm_hostname": vm_hostname,
+    }
+
+
 def _parse_pa_error(response: requests.Response) -> Optional[str]:
     """Extrai error.code do payload de erro do Power Automate, se houver."""
     try:

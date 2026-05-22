@@ -103,6 +103,73 @@ def test_build_payload_partial_failure_renders_error_only_for_failed():
     assert payload["ppdm_error"] == "PPDM offline"
 
 
+# ---------- build_tim_only_payload (modo split: produtor TIM) ----------
+
+def test_build_tim_only_payload_includes_only_tim_fields():
+    """Payload do Fluxo B nao deve incluir veeam_* nem ppdm_*."""
+    ts = datetime(2026, 5, 21, 8, 0, 0, tzinfo=timezone.utc)
+    payload = teams_sender.build_tim_only_payload(
+        timeismoney_image=b"\x89PNG_TIM",
+        timeismoney_error=None,
+        vm_hostname="VM-TIM",
+        timestamp=ts,
+    )
+    assert set(payload.keys()) == {
+        "timeismoney_image_b64", "timeismoney_error", "timestamp", "vm_hostname",
+    }
+    assert payload["timeismoney_image_b64"] == base64.b64encode(b"\x89PNG_TIM").decode("ascii")
+    assert payload["timeismoney_error"] == ""
+    assert payload["vm_hostname"] == "VM-TIM"
+    assert payload["timestamp"] == "2026-05-21T08:00:00"
+
+
+def test_build_tim_only_payload_generates_error_png_on_failure():
+    """Captura TIM falhou -> PNG vermelho com mensagem, satisfaz hostedContents."""
+    payload = teams_sender.build_tim_only_payload(
+        timeismoney_image=None,
+        timeismoney_error="timeout no admin-dashboard",
+        vm_hostname="VM-TIM",
+    )
+    assert payload["timeismoney_image_b64"] != ""
+    assert base64.b64decode(payload["timeismoney_image_b64"]).startswith(b"\x89PNG")
+    assert payload["timeismoney_error"] == "timeout no admin-dashboard"
+
+
+# ---------- build_veeam_ppdm_payload (modo split: agregador V+P) ----------
+
+def test_build_veeam_ppdm_payload_includes_only_vp_fields():
+    """Payload do Fluxo C nao tem campos TIM (PA le do OneDrive)."""
+    ts = datetime(2026, 5, 21, 8, 0, 0, tzinfo=timezone.utc)
+    payload = teams_sender.build_veeam_ppdm_payload(
+        veeam_image=b"\x89PNG_V", veeam_error=None,
+        ppdm_image=b"\x89PNG_P", ppdm_error=None,
+        vm_hostname="VM-VP",
+        timestamp=ts,
+    )
+    assert set(payload.keys()) == {
+        "veeam_image_b64", "veeam_error",
+        "ppdm_image_b64", "ppdm_error",
+        "timestamp", "vm_hostname",
+    }
+    assert "timeismoney_image_b64" not in payload
+    assert "timeismoney_error" not in payload
+    assert payload["timestamp"] == "2026-05-21T08:00:00"
+
+
+def test_build_veeam_ppdm_payload_propagates_partial_failure():
+    """Veeam OK + PPDM falhou -> PPDM vira PNG vermelho, mensagem preservada."""
+    payload = teams_sender.build_veeam_ppdm_payload(
+        veeam_image=b"\x89PNG_REAL", veeam_error=None,
+        ppdm_image=None, ppdm_error="PPDM offline",
+        vm_hostname="VM-VP",
+    )
+    assert base64.b64decode(payload["veeam_image_b64"]) == b"\x89PNG_REAL"
+    assert payload["veeam_error"] == ""
+    assert payload["ppdm_image_b64"] != ""
+    assert base64.b64decode(payload["ppdm_image_b64"]).startswith(b"\x89PNG")
+    assert payload["ppdm_error"] == "PPDM offline"
+
+
 # ---------- _should_retry ----------
 
 @pytest.mark.parametrize("status,expected", [

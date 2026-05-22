@@ -2,17 +2,26 @@
 
 Chamado pelo Task Scheduler todo dia as 08:00 via run_daily.bat.
 
-Suporta 3 modos de operacao definidos em config.toml [mode].name:
+Suporta 3 modos de operacao via config.toml [mode].name:
 
-  all          - single-server: captura V+P+TIM, envia pro Teams (legado)
-  veeam_ppdm   - captura V+P, le TIM do shared_dir, envia pro Teams
-  timeismoney  - captura TIM, escreve no shared_dir, NAO envia (produtor)
+  all          - single-server: captura V+P+TIM, envia tudo num POST pro
+                 Fluxo PA "Send Daily Full" (legado, backward-compat).
+
+  timeismoney  - VM produtora: captura TIM, POSTa pro Fluxo PA "Store TIM
+                 Artifact" (que salva o PNG no OneDrive). NAO posta no Teams.
+
+  veeam_ppdm   - VM agregadora: captura V+P, POSTa pro Fluxo PA
+                 "Aggregate + Send" (que le TIM do OneDrive, combina com
+                 V+P do payload, posta no Teams).
+
+A "ponte" entre as 2 VMs no modo split eh feita pelos fluxos PA + OneDrive.
+Cada VM tem seu proprio `teams_webhook` no keyring com a URL do fluxo certo.
 
 Logs vao pra logs/agent.log (rotacionado diariamente, 30 dias de retencao).
 
 Exit codes:
-  0 - sucesso (envio Teams OK, ou produtor TIM gravou artefato)
-  1 - envio Teams falhou apos todas as tentativas (so aplica em modos que enviam)
+  0 - sucesso (POST pro PA retornou 2xx)
+  1 - POST pro PA falhou apos todas as tentativas (payload salvo em logs/FAILED_*.json)
   2 - config invalida (TOML mal-formado, secret faltando, modo invalido)
 """
 from __future__ import annotations
@@ -25,15 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import (
-    artifact_store,
-    config,
-    logger,
-    ppdm_capture,
-    teams_sender,
-    timeismoney_capture,
-    veeam_capture,
-)
+from src import config, logger, ppdm_capture, teams_sender, timeismoney_capture, veeam_capture
 
 
 def main() -> int:
@@ -48,52 +49,45 @@ def main() -> int:
     log.info("sure-backup-agent run iniciado em %s", socket.gethostname())
 
     if cfg.mode.name == config.MODE_TIMEISMONEY:
-        return _run_timeismoney_only(cfg, log)
+        return _run_timeismoney_producer(cfg, log)
     if cfg.mode.name == config.MODE_VEEAM_PPDM:
-        return _run_veeam_ppdm_and_send(cfg, log)
+        return _run_veeam_ppdm_aggregator(cfg, log)
     return _run_all(cfg, log)
 
 
-def _capture_veeam_and_ppdm(cfg, log):
-    """Captura V+P no mesmo servidor. Retorna ((v_img,v_err),(p_img,p_err))."""
+def _capture_veeam(cfg, log):
     log.info("Capturando Veeam Console...")
-    veeam_img, veeam_err = veeam_capture.capture(cfg.veeam)
-    if veeam_err:
-        log.error("Veeam captura falhou: %s", veeam_err)
+    img, err = veeam_capture.capture(cfg.veeam)
+    if err:
+        log.error("Veeam captura falhou: %s", err)
     else:
-        log.info("Veeam captura OK: %d bytes", len(veeam_img))
+        log.info("Veeam captura OK: %d bytes", len(img))
+    return img, err
 
+
+def _capture_ppdm(cfg, log):
     log.info("Capturando PPDM Protection Jobs...")
-    ppdm_img, ppdm_err = ppdm_capture.capture(cfg.ppdm)
-    if ppdm_err:
-        log.error("PPDM captura falhou: %s", ppdm_err)
+    img, err = ppdm_capture.capture(cfg.ppdm)
+    if err:
+        log.error("PPDM captura falhou: %s", err)
     else:
-        log.info("PPDM captura OK: %d bytes", len(ppdm_img))
-
-    return (veeam_img, veeam_err), (ppdm_img, ppdm_err)
+        log.info("PPDM captura OK: %d bytes", len(img))
+    return img, err
 
 
 def _capture_tim(cfg, log):
     log.info("Capturando Time Is Money admin-dashboard...")
-    tim_img, tim_err = timeismoney_capture.capture(cfg.timeismoney)
-    if tim_err:
-        log.error("TimeIsMoney captura falhou: %s", tim_err)
+    img, err = timeismoney_capture.capture(cfg.timeismoney)
+    if err:
+        log.error("TimeIsMoney captura falhou: %s", err)
     else:
-        log.info("TimeIsMoney captura OK: %d bytes", len(tim_img))
-    return tim_img, tim_err
+        log.info("TimeIsMoney captura OK: %d bytes", len(img))
+    return img, err
 
 
-def _send_payload(cfg, log, veeam_img, veeam_err, ppdm_img, ppdm_err, tim_img, tim_err):
-    log.info("Montando payload e enviando pro Teams...")
-    payload = teams_sender.build_payload(
-        veeam_image=veeam_img,
-        veeam_error=veeam_err,
-        ppdm_image=ppdm_img,
-        ppdm_error=ppdm_err,
-        timeismoney_image=tim_img,
-        timeismoney_error=tim_err,
-        vm_hostname=socket.gethostname(),
-    )
+def _send_and_finalize(cfg, log, payload, kind_label):
+    """Wrapper comum: POSTa pro webhook configurado, loga, retorna exit code."""
+    log.info("Enviando payload (%s) pro Power Automate...", kind_label)
     result = teams_sender.send(
         payload,
         webhook_url=cfg.teams.webhook_url,
@@ -114,45 +108,43 @@ def _send_payload(cfg, log, veeam_img, veeam_err, ppdm_img, ppdm_err, tim_img, t
 
 
 def _run_all(cfg, log):
-    """Modo legado: 1 servidor faz tudo."""
-    (veeam_img, veeam_err), (ppdm_img, ppdm_err) = _capture_veeam_and_ppdm(cfg, log)
+    """Modo legado/single-server: 1 VM faz tudo, manda payload completo."""
+    veeam_img, veeam_err = _capture_veeam(cfg, log)
+    ppdm_img, ppdm_err = _capture_ppdm(cfg, log)
     tim_img, tim_err = _capture_tim(cfg, log)
-    return _send_payload(cfg, log, veeam_img, veeam_err, ppdm_img, ppdm_err, tim_img, tim_err)
-
-
-def _run_veeam_ppdm_and_send(cfg, log):
-    """Modo agregador: V+P aqui, TIM lido do shared_dir."""
-    (veeam_img, veeam_err), (ppdm_img, ppdm_err) = _capture_veeam_and_ppdm(cfg, log)
-
-    log.info("Lendo artefato TIM de %s (max_age=%dmin)",
-             cfg.mode.shared_artifact_dir, cfg.mode.artifact_max_age_minutes)
-    tim_img, tim_err = artifact_store.read_tim(
-        cfg.mode.shared_artifact_dir, cfg.mode.artifact_max_age_minutes
+    payload = teams_sender.build_payload(
+        veeam_image=veeam_img, veeam_error=veeam_err,
+        ppdm_image=ppdm_img, ppdm_error=ppdm_err,
+        timeismoney_image=tim_img, timeismoney_error=tim_err,
+        vm_hostname=socket.gethostname(),
     )
-    if tim_err:
-        log.error("TIM artefato indisponivel: %s", tim_err)
-    else:
-        log.info("TIM artefato lido OK: %d bytes", len(tim_img))
-
-    return _send_payload(cfg, log, veeam_img, veeam_err, ppdm_img, ppdm_err, tim_img, tim_err)
+    return _send_and_finalize(cfg, log, payload, "full V+P+TIM")
 
 
-def _run_timeismoney_only(cfg, log):
-    """Modo produtor: so captura TIM e escreve no shared_dir. NAO envia pro Teams."""
+def _run_timeismoney_producer(cfg, log):
+    """Modo produtor TIM: captura e POSTa pro fluxo 'Store TIM Artifact'."""
     tim_img, tim_err = _capture_tim(cfg, log)
-    try:
-        artifact_store.write_tim(
-            cfg.mode.shared_artifact_dir,
-            image=tim_img,
-            error=tim_err,
-            hostname=socket.gethostname(),
-        )
-    except OSError as exc:
-        log.exception("Falha ao gravar artefato TIM em %s", cfg.mode.shared_artifact_dir)
-        log.info("================ FIM (falha de escrita) ================")
-        return 1
-    log.info("================ FIM (artefato TIM gravado) ================")
-    return 0
+    payload = teams_sender.build_tim_only_payload(
+        timeismoney_image=tim_img, timeismoney_error=tim_err,
+        vm_hostname=socket.gethostname(),
+    )
+    return _send_and_finalize(cfg, log, payload, "TIM-only")
+
+
+def _run_veeam_ppdm_aggregator(cfg, log):
+    """Modo agregador V+P: captura e POSTa pro fluxo 'Aggregate + Send'.
+
+    O fluxo PA le o TIM do OneDrive (gravado mais cedo pela VM-TIM) e
+    combina com V+P do payload antes de postar no Teams.
+    """
+    veeam_img, veeam_err = _capture_veeam(cfg, log)
+    ppdm_img, ppdm_err = _capture_ppdm(cfg, log)
+    payload = teams_sender.build_veeam_ppdm_payload(
+        veeam_image=veeam_img, veeam_error=veeam_err,
+        ppdm_image=ppdm_img, ppdm_error=ppdm_err,
+        vm_hostname=socket.gethostname(),
+    )
+    return _send_and_finalize(cfg, log, payload, "V+P (TIM vem do OneDrive)")
 
 
 if __name__ == "__main__":

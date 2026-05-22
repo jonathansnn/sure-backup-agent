@@ -46,12 +46,16 @@ Write-Host "`n[5/5] Configurando secrets no Windows Credential Manager"
 # Le o modo do config.toml pra saber quais secrets sao relevantes nessa VM
 $modeName = & $venvPython -c "import tomllib; print(tomllib.load(open(r'$root\config.toml','rb')).get('mode',{}).get('name','all'))"
 Write-Host "  Modo desta VM: $modeName" -ForegroundColor Cyan
-Write-Host "    all          -> webhook PA + senha PPDM + senha TIM"
-Write-Host "    veeam_ppdm   -> webhook PA + senha PPDM (TIM lido do shared_dir)"
-Write-Host "    timeismoney  -> apenas senha TIM"
+Write-Host "    all          -> webhook 'Send Daily Full'   + senha PPDM + senha TIM"
+Write-Host "    veeam_ppdm   -> webhook 'Aggregate + Send'  + senha PPDM"
+Write-Host "    timeismoney  -> webhook 'Store TIM Artifact'+ senha TIM"
+Write-Host ""
+Write-Host "  IMPORTANTE: a URL do webhook desta VM deve apontar pro fluxo PA correto"
+Write-Host "  do modo acima. Mesmo NOME de secret em todas as VMs (teams_webhook),"
+Write-Host "  VALOR diferente apontando pro fluxo certo de cada uma." -ForegroundColor Yellow
 Write-Host ""
 
-$needsWebhook = ($modeName -eq "all" -or $modeName -eq "veeam_ppdm")
+$needsWebhook = $true
 $needsPpdm    = ($modeName -eq "all" -or $modeName -eq "veeam_ppdm")
 $needsTim     = ($modeName -eq "all" -or $modeName -eq "timeismoney")
 
