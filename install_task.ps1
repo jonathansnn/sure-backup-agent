@@ -12,8 +12,26 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $batPath = Join-Path $root "run_daily.bat"
-$taskName = "Sure Backup Agent - Daily Report"
-$dailyTime = "08:00"
+
+# Le o modo do config.toml. Modo TIM roda 5min antes do agregador pra garantir
+# que o artefato esta no shared_dir quando V+P for ler.
+$venvPython = "$root\.venv\Scripts\python.exe"
+$modeName = & $venvPython -c "import tomllib; print(tomllib.load(open(r'$root\config.toml','rb')).get('mode',{}).get('name','all'))"
+
+switch ($modeName) {
+    "timeismoney" {
+        $taskName  = "Sure Backup Agent - TIM Producer"
+        $dailyTime = "07:55"
+    }
+    "veeam_ppdm" {
+        $taskName  = "Sure Backup Agent - Veeam+PPDM Aggregator"
+        $dailyTime = "08:00"
+    }
+    default {
+        $taskName  = "Sure Backup Agent - Daily Report"
+        $dailyTime = "08:00"
+    }
+}
 
 Write-Host "=== Instalando Task Scheduler ===" -ForegroundColor Cyan
 Write-Host "Tarefa:    $taskName"

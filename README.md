@@ -255,6 +255,81 @@ Convenções do payload:
 - `*_error` é o **sinal canônico de sucesso/falha**: string vazia = OK, não-vazia = falha (mensagem curta).
 - `timestamp` é **UTC bare** (`"2026-05-18T08:00:00"`, sem offset). O `formatDateTime(addHours(triggerBody()?['timestamp'], -3), 'dd/MM/yyyy HH:mm')` no PA converte pra BRT.
 
+## Deploy multi-servidor (modo split)
+
+A partir da versão atual, suporta dividir as capturas entre 2 VMs quando o servidor que tem acesso ao Veeam **não** consegue alcançar o Time Is Money (ou vice-versa).
+
+### Arquitetura
+
+```
+[VM-TIM]  07:55  capture TIM ──► shared_artifact_dir/tim_image.png + tim_meta.json
+                                            ▲
+                                            │ pull
+[VM-V+P]  08:00  capture V+P  ──► lê TIM ──┘──► POST único pro Teams
+```
+
+- **VM-TIM** (`mode = "timeismoney"`): só captura o dashboard do TIM, grava 2 arquivos no diretório compartilhado, **não** envia pro Teams.
+- **VM-V+P** (`mode = "veeam_ppdm"`): captura Veeam + PPDM, lê o artefato TIM do diretório, monta payload combinado e envia. É a VM "agregadora".
+
+### Diretório compartilhado
+
+Pode ser qualquer caminho acessível pelas 2 VMs (leitura na agregadora, escrita+leitura na TIM):
+
+- **UNC path:** `\\fileserver\share\sure-backup-agent\`
+- **Drive mapeado:** `Z:\sure-backup-agent\`
+- **OneDrive sincronizado:** pasta que existe em ambas com mesmo nome
+
+O contrato é simples — 2 arquivos:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `tim_image.png` | bytes do PNG (zero bytes se a captura falhou) |
+| `tim_meta.json` | `{ "error": str, "timestamp": ISO8601 UTC, "hostname": str, "image_bytes": int }` |
+
+Escrita é **atômica** (write-temp + `os.replace`) — leitor nunca pega arquivo half-written. Definição em [`src/artifact_store.py`](src/artifact_store.py).
+
+### Configuração em cada VM
+
+**VM-TIM** (`config.toml`):
+
+```toml
+[mode]
+name = "timeismoney"
+shared_artifact_dir = '\\fileserver\share\sure-backup-agent'
+```
+
+Secrets necessários (keyring): só `sure-backup-agent/timeismoney`.
+
+**VM-V+P** (`config.toml`):
+
+```toml
+[mode]
+name = "veeam_ppdm"
+shared_artifact_dir = '\\fileserver\share\sure-backup-agent'
+artifact_max_age_minutes = 60   # TIM stale se >60min antigo
+```
+
+Secrets necessários: `sure-backup-agent/teams_webhook` + `sure-backup-agent/ppdm`. **Não** precisa do TIM.
+
+### Comportamento quando TIM falha ou está stale
+
+Se a VM-TIM travou, o artefato vai estar velho. O agregador detecta isso via timestamp e trata como **falha do TIM** com mensagem amigável no Teams:
+
+| Cenário | Mensagem no Teams |
+|---|---|
+| Artefato ausente | `"TIM artefato ausente em \\... (VM TIM rodou?)"` |
+| Artefato > max_age | `"TIM artefato stale (90min, limite 60min) — última captura: 2026-05-21T..."` |
+| TIM capturou mas falhou login | A mensagem original do erro (vinda do meta.json) |
+
+O Teams sempre recebe a mensagem com Veeam + PPDM funcionando, e o "card TIM" com PNG vermelho de erro — exatamente como o tratamento padrão de falha de captura.
+
+### Schedule recomendado
+
+- VM-TIM: **07:55**
+- VM-V+P: **08:00** (5 minutos depois — dá tempo do TIM gravar)
+
+O `install_task.ps1` já adapta o horário e o nome da tarefa baseado em `[mode].name`.
+
 ## Como rodar
 
 ### Smoke test manual

@@ -115,6 +115,83 @@ def test_load_raises_when_ppdm_password_missing_and_required(mocker, tmp_path):
         cfg.load(path=path, require_ppdm_password=True)
 
 
+def test_default_mode_is_all_when_omitted(mocker, tmp_path):
+    """TOML sem [mode] = retrocompatibilidade, default 'all'."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml(tmp_path)
+    mocker.patch(
+        "src.config.keyring.get_password",
+        side_effect=lambda s, u: {"test/teams": "wh", "test/ppdm": "p", "test/tim": "t"}.get(s),
+    )
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.mode.name == cfg.MODE_ALL
+    assert c.mode.shared_artifact_dir is None
+    assert c.mode.artifact_max_age_minutes == 60
+
+
+def _write_toml_with_mode(tmp_path, mode_name, shared_dir=r"\\fileserver\share"):
+    base = _write_toml(tmp_path).read_text(encoding="utf-8")
+    # Aspas simples no TOML = literal string, sem escape (ideal pra paths Windows)
+    mode_section = textwrap.dedent(f"""
+        [mode]
+        name = "{mode_name}"
+        shared_artifact_dir = '{shared_dir}'
+        artifact_max_age_minutes = 30
+    """)
+    path = tmp_path / "config.toml"
+    path.write_text(base + mode_section, encoding="utf-8")
+    return path
+
+
+def test_mode_veeam_ppdm_does_not_require_tim_secret(mocker, tmp_path):
+    """No agregador, secret do TIM nem eh consultado."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam_ppdm")
+    # So webhook + ppdm setados. TIM ausente nao deve ser fatal.
+    secrets = {("test/teams", "url"): "wh", ("test/ppdm", "svc_test"): "p"}
+    mocker.patch(
+        "src.config.keyring.get_password",
+        side_effect=lambda s, u: secrets.get((s, u)),
+    )
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.mode.name == cfg.MODE_VEEAM_PPDM
+    assert c.timeismoney.password == ""  # nao carregado
+    assert c.ppdm.password == "p"
+    assert c.teams.webhook_url == "wh"
+    assert c.mode.artifact_max_age_minutes == 30
+
+
+def test_mode_timeismoney_does_not_require_webhook_nor_ppdm(mocker, tmp_path):
+    """No produtor TIM, so o secret do TIM importa."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "timeismoney")
+    secrets = {("test/tim", "rootadmin@test.com"): "t"}
+    mocker.patch(
+        "src.config.keyring.get_password",
+        side_effect=lambda s, u: secrets.get((s, u)),
+    )
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.mode.name == cfg.MODE_TIMEISMONEY
+    assert c.timeismoney.password == "t"
+    assert c.teams.webhook_url == ""
+    assert c.ppdm.password == ""
+
+
+def test_invalid_mode_raises(mocker, tmp_path):
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "modo_invalido")
+    with pytest.raises(cfg.ConfigError, match="invalido"):
+        cfg.load(path=path, require_ppdm_password=False)
+
+
+def test_split_mode_requires_shared_dir(mocker, tmp_path):
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    # shared_dir vazio
+    path = _write_toml_with_mode(tmp_path, "veeam_ppdm", shared_dir="")
+    with pytest.raises(cfg.ConfigError, match="shared_artifact_dir"):
+        cfg.load(path=path, require_ppdm_password=False)
+
+
 def test_load_raises_when_toml_missing(tmp_path):
     with pytest.raises(cfg.ConfigError, match="não encontrado"):
         cfg.load(path=tmp_path / "nope.toml")

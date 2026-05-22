@@ -1,6 +1,20 @@
 # Configuração não-secret do sure-backup-agent.
 # Secrets (URL do Power Automate, senha do PPDM) ficam no Windows Credential Manager via keyring.
 
+[mode]
+# Modo de operacao desta VM. Valores aceitos:
+#   "all"          - single-server: captura V+P+TIM e envia (legado, default)
+#   "veeam_ppdm"   - captura V+P, le TIM do shared_artifact_dir, envia pro Teams
+#   "timeismoney"  - captura TIM, escreve no shared_artifact_dir, NAO envia
+name = "all"
+# Diretorio compartilhado entre as 2 VMs no deploy split. Ignorado quando name="all".
+# Pode ser UNC (\\fileserver\share), drive mapeado (Z:\sure-backup-agent\)
+# ou pasta sincronizada via OneDrive/SharePoint.
+shared_artifact_dir = ""
+# Artefato TIM mais velho que isso vira "TIM stale" no payload do Teams.
+# Default 60min cobre TIM rodando 5min antes do V+P, com folga generosa.
+artifact_max_age_minutes = 60
+
 [veeam]
 console_path = "C:\\Program Files\\Veeam\\Backup and Replication\\Console\\veeam.backup.shell.exe"
 window_title_regex = "Veeam Backup & Replication"

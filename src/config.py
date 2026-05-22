@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import keyring
 
@@ -70,6 +71,25 @@ class LoggingConfig:
     level: str
 
 
+# Modos de operacao do agente em deploy multi-servidor.
+# Cada VM tem seu config.toml com um valor diferente em [mode].name.
+MODE_ALL = "all"                  # captura V+P+TIM e envia (single-server, default)
+MODE_VEEAM_PPDM = "veeam_ppdm"    # captura V+P, le TIM de shared_dir, envia
+MODE_TIMEISMONEY = "timeismoney"  # captura TIM, escreve em shared_dir, NAO envia
+VALID_MODES = {MODE_ALL, MODE_VEEAM_PPDM, MODE_TIMEISMONEY}
+
+
+@dataclass(frozen=True)
+class ModeConfig:
+    name: str
+    # Diretorio compartilhado entre as 2 VMs (UNC, drive mapeado, OneDrive, etc).
+    # Onde TIM escreve seu artefato e onde V+P le. Vazio quando mode=all.
+    shared_artifact_dir: Optional[Path]
+    # Idade maxima do artefato TIM antes de ser considerado stale. Default 60min
+    # cobre o caso de TIM rodar 5min antes do V+P, com folga pra atrasos.
+    artifact_max_age_minutes: int
+
+
 @dataclass(frozen=True)
 class Config:
     veeam: VeeamConfig
@@ -77,6 +97,7 @@ class Config:
     timeismoney: TimeIsMoneyConfig
     teams: TeamsConfig
     logging: LoggingConfig
+    mode: ModeConfig
 
 
 class ConfigError(Exception):
@@ -97,9 +118,13 @@ def _get_secret(service: str, username: str) -> str:
 def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Config:
     """Carrega configuração do TOML + secrets do Credential Manager.
 
-    `require_ppdm_password=False` permite carregar a config sem ter
-    setado a senha do PPDM ainda — útil durante desenvolvimento inicial
-    quando só o teams_sender está sendo testado.
+    Quais secrets sao exigidos depende do `[mode].name`:
+      - all          -> webhook + ppdm + tim
+      - veeam_ppdm   -> webhook + ppdm  (sem tim; le artefato do shared_dir)
+      - timeismoney  -> tim             (sem webhook nem ppdm; nao envia)
+
+    `require_ppdm_password=False` continua suportado pra desenvolvimento, mas
+    a checagem efetiva eh feita por modo abaixo.
     """
     if not path.exists():
         raise ConfigError(f"config.toml não encontrado em {path}")
@@ -107,19 +132,34 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
     with path.open("rb") as f:
         data = tomllib.load(f)
 
+    mode_data = data.get("mode", {})
+    mode_name = mode_data.get("name", MODE_ALL)
+    if mode_name not in VALID_MODES:
+        raise ConfigError(
+            f"[mode].name='{mode_name}' invalido. Valores aceitos: {sorted(VALID_MODES)}"
+        )
+    shared_dir_raw = mode_data.get("shared_artifact_dir", "").strip()
+    shared_dir = Path(shared_dir_raw) if shared_dir_raw else None
+    if mode_name != MODE_ALL and shared_dir is None:
+        raise ConfigError(
+            f"mode='{mode_name}' exige [mode].shared_artifact_dir configurado "
+            "(caminho UNC ou drive mapeado acessivel pelas 2 VMs)."
+        )
+
     keyring_cfg = data.get("keyring", {})
     service_teams = keyring_cfg.get("service_teams_webhook", "sure-backup-agent/teams_webhook")
     service_ppdm = keyring_cfg.get("service_ppdm", "sure-backup-agent/ppdm")
     service_tim = keyring_cfg.get("service_timeismoney", "sure-backup-agent/timeismoney")
 
-    webhook_url = _get_secret(service_teams, "url")
+    # Quais secrets exigir depende do modo. Mode=timeismoney roda numa VM que
+    # nem precisa saber a URL do Teams.
+    needs_webhook = mode_name in (MODE_ALL, MODE_VEEAM_PPDM)
+    needs_ppdm = mode_name in (MODE_ALL, MODE_VEEAM_PPDM) and require_ppdm_password
+    needs_tim = mode_name in (MODE_ALL, MODE_TIMEISMONEY) and require_ppdm_password
 
-    if require_ppdm_password:
-        ppdm_password = _get_secret(service_ppdm, data["ppdm"]["username"])
-        tim_password = _get_secret(service_tim, data["timeismoney"]["username"])
-    else:
-        ppdm_password = ""
-        tim_password = ""
+    webhook_url = _get_secret(service_teams, "url") if needs_webhook else ""
+    ppdm_password = _get_secret(service_ppdm, data["ppdm"]["username"]) if needs_ppdm else ""
+    tim_password = _get_secret(service_tim, data["timeismoney"]["username"]) if needs_tim else ""
 
     log_dir = PROJECT_ROOT / data["logging"]["log_dir"]
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -166,4 +206,9 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
             retry_backoff_seconds=data["teams"]["retry_backoff_seconds"],
         ),
         logging=LoggingConfig(log_dir=log_dir, level=data["logging"]["level"]),
+        mode=ModeConfig(
+            name=mode_name,
+            shared_artifact_dir=shared_dir,
+            artifact_max_age_minutes=int(mode_data.get("artifact_max_age_minutes", 60)),
+        ),
     )
