@@ -1,43 +1,59 @@
 # Guia — Fluxos Power Automate pro deploy multi-servidor
 
-Este documento descreve a criação dos **2 novos fluxos PA** necessários quando as VMs do Veeam e do Time Is Money não estão na mesma rede e precisam usar Power Automate + OneDrive como ponte.
+Quando as VMs do Veeam, PPDM e Time Is Money estão em **redes diferentes** e não se enxergam, usamos Power Automate + OneDrive como ponte: cada produtor POSTa seu PNG pro PA que salva no OneDrive, e um agregador lê tudo de volta e monta a mensagem única do Teams.
 
-## Visão geral
+Este guia cobre o **deploy full-split** (3 VMs: PPDM, TIM e Veeam separados).
+
+> As funções de expressão do PA (`base64ToBinary`, `triggerBody`, `setProperty`, `json`, `string`, `base64`, `coalesce`, `length`, `if`, `equals`, `formatDateTime`) **não** são traduzidas — use exatamente como mostrado, mesmo na interface em português.
+
+## Visão geral (full-split)
 
 ```
-[VM-TIM]   07:55   ─POST─►  Fluxo B "Store TIM Artifact"   ─► OneDrive: tim_latest.{png,json}
-                                                                              │
-                                                                              │ lê
-[VM-V+P]   08:00   ─POST─►  Fluxo C "Aggregate + Send"  ────────────────────┘
-                                                                              │
-                                                                              └─► Teams (1 mensagem)
+[VM-PPDM]  mode=ppdm        ─POST─► Fluxo D "Store PPDM Artifact" ─► OneDrive: ppdm_latest_AAAAMMDD.{png,json}
+                                                                                    │
+[VM-TIM]   mode=timeismoney ─POST─► Fluxo B "Store TIM Artifact"  ─► OneDrive: tim_latest_AAAAMMDD.{png,json}
+                                                                                    │ lê os 2
+[VM-Veeam] mode=veeam       ─POST─► Fluxo C' "Aggregate + Send" ◄───────────────────┘
+                                              │  (Veeam vem do payload; PPDM e TIM do OneDrive)
+                                              └─► Teams (1 mensagem com 3 imagens)
 ```
 
-| Modo | Webhook que essa VM usa | Fluxo |
-|---|---|---|
-| `all` (legado, single-server) | URL do fluxo "Send Daily Full" (atual) | A (já existe) |
-| `timeismoney` | URL do fluxo "Store TIM Artifact" | B (novo) |
-| `veeam_ppdm` | URL do fluxo "Aggregate + Send" | C (novo) |
+| Modo (`config.toml`) | VM faz | Webhook que essa VM usa | Função do fluxo |
+|---|---|---|---|
+| `all` (legado) | V+P+TIM single-server | Fluxo A "Send Daily Full" | Posta no Teams direto |
+| `ppdm` | só PPDM (last-known-good) | Fluxo D "Store PPDM Artifact" | Salva PNG no OneDrive, não posta |
+| `timeismoney` | só TIM | Fluxo B "Store TIM Artifact" | Salva PNG no OneDrive, não posta |
+| `veeam` | só Veeam | Fluxo C' "Aggregate + Send" | Lê PPDM **e** TIM do OneDrive, combina, posta |
+| `veeam_ppdm` (legado) | V+P juntos | Fluxo C "Aggregate + Send" | Lê só TIM do OneDrive, combina, posta |
 
-**Convenção importante:** todas as VMs usam o mesmo NOME de secret no keyring (`sure-backup-agent/teams_webhook`). O VALOR é diferente em cada uma — aponta pro fluxo PA correto pro modo da VM.
+**Convenção do webhook:** todas as VMs usam o mesmo NOME de secret no keyring (`sure-backup-agent/teams_webhook`). O VALOR é diferente em cada uma — aponta pro fluxo PA correto pro modo daquela VM.
+
+**Pasta única no OneDrive:** `/sure-backup-agent-artifacts/`. Os 3 fluxos produtores escrevem lá; o agregador lê de lá.
+
+---
+
+## ⚠️ As 4 pegadinhas do PA (leia antes de começar)
+
+Estas mordem em todo fluxo. Já estão aplicadas nos passos abaixo, mas entenda o porquê:
+
+1. **Montar JSON: use `setProperty`, NÃO `createObject`.** `createObject` é função do Adaptive Cards, não do runtime de fluxos — o PA rejeita com *"createObject is not defined"*. `setProperty` encadeado sobre `json('{}')` é o jeito que funciona.
+2. **Ler arquivo do OneDrive: use "Obter conteúdo do arquivo usando caminho"**, não "Obter arquivo" (essa pede um *fileId* interno e dá *"Invalid fileId"*).
+3. **Parsear JSON lido do OneDrive: envolva com `json(string(...))`.** O OneDrive devolve binário (octet-stream); o Analisar JSON exige string-JSON. Sem isso: *"content must be of type JSON"*.
+4. **`contentBytes` do `hostedContents` quando a imagem vem do OneDrive: envolva com `base64(...)`.** O Graph espera string base64; bytes crus dão *"Cannot convert literal to Edm.Binary"*. (Imagens que vêm do payload já são base64 — essas não precisam de `base64()`.)
 
 ---
 
 ## Fluxo B — "Store TIM Artifact"
 
-**Função:** receber o PNG do TIM da VM produtora e salvar no OneDrive. Não posta nada no Teams.
+**Função:** receber o PNG do TIM da VM-TIM e salvar no OneDrive. Não posta no Teams.
 
 ### Passo 1 — Criar o fluxo
-
-1. Em https://make.powerautomate.com → **Criar** → **Fluxo de nuvem instantâneo**
+1. https://make.powerautomate.com → **Criar** → **Fluxo de nuvem instantâneo**
 2. **Nome:** `Sure Backup Agent — Store TIM Artifact`
-3. **Gatilho:** "Quando uma solicitação HTTP for recebida"
-4. **Criar**
+3. **Gatilho:** "Quando uma solicitação HTTP for recebida" → **Criar**
 
 ### Passo 2 — Schema do gatilho HTTP
-
 Método: `POST`. Schema:
-
 ```json
 {
   "type": "object",
@@ -50,116 +66,132 @@ Método: `POST`. Schema:
   "required": ["timestamp", "vm_hostname"]
 }
 ```
+Salva. Anota a **URL HTTP POST** (vai pro keyring da VM-TIM).
 
-Salva. Anota a **URL HTTP POST** gerada (é o que vai pro keyring da VM-TIM).
-
-### Passo 3 — Action: Compor binário TIM
-
-**+ Nova etapa** → **Compor** (Compose). Nomear `Compor Binario TIM`. Expressão:
-
+### Passo 3 — Compor binário TIM
+**+ Nova etapa** → **Compor**. Nomear `Compor Binario TIM`. Entradas (expressão):
 ```
 base64ToBinary(triggerBody()?['timeismoney_image_b64'])
 ```
 
-### Passo 4 — Action: Salvar PNG no OneDrive
-
+### Passo 4 — Salvar PNG no OneDrive
 **+ Nova etapa** → **OneDrive for Business** → **Criar arquivo**.
+- **Caminho da pasta:** `/sure-backup-agent-artifacts/`
+- **Nome do arquivo:** `tim_latest_@{utcNow('yyyyMMdd')}.png`
+- **Conteúdo do arquivo:** output de `Compor Binario TIM`
 
-- **Caminho da pasta:** `/sure-backup-agent-artifacts/` (cria se não existir)
-- **Nome do arquivo:** `tim_latest.png` (fixo — sempre sobrescreve)
-- **Conteúdo do arquivo:** Output da etapa `Compor Binario TIM`
+> Nome com data (`utcNow('yyyyMMdd')`) evita o erro de "Criar arquivo já existe" e dá 1 arquivo por dia. O agregador lê o do dia atual.
 
-> ⚠️ "Criar arquivo" do OneDrive falha se o arquivo já existe. Use **"Atualizar arquivo"** se preferir, OU adicione uma ação prévia "Excluir arquivo" com `-ErrorAction Ignore` (na verdade no PA é "Configurar Try-Catch" em torno do excluir).
->
-> **Solução mais simples:** use a ação **"Criar arquivo"** com nome único por execução tipo `tim_latest_@{utcNow('yyyyMMdd')}.png`. Aí cada dia tem seu arquivo. O Fluxo C lê o do dia atual.
-
-### Passo 5 — Action: Compor objeto de metadados
-
-**+ Nova etapa** → **Operações de Dados** → **Compor**. Nomear `Compor Meta TIM`.
-
-No campo **Entradas**, cola **só** essa expressão (clica em "Expressão" / `fx`, cola, OK):
-
+### Passo 5 — Compor objeto de metadados
+**+ Nova etapa** → **Compor**. Nomear `Compor Meta TIM`. Entradas (expressão — **`setProperty`, não `createObject`**):
 ```
-createObject('error', coalesce(triggerBody()?['timeismoney_error'], ''), 'timestamp', triggerBody()?['timestamp'], 'hostname', triggerBody()?['vm_hostname'], 'image_bytes', length(coalesce(triggerBody()?['timeismoney_image_b64'], '')))
+setProperty(setProperty(setProperty(setProperty(json('{}'), 'error', coalesce(triggerBody()?['timeismoney_error'], '')), 'timestamp', triggerBody()?['timestamp']), 'hostname', triggerBody()?['vm_hostname']), 'image_bytes', length(coalesce(triggerBody()?['timeismoney_image_b64'], '')))
 ```
+Lendo de dentro pra fora: `json('{}')` cria objeto vazio, cada `setProperty` adiciona um campo. Resultado: `{"error":...,"timestamp":...,"hostname":...,"image_bytes":N}`.
 
-> Por que `createObject` em vez de montar JSON via `concat` de strings? Construir JSON por concatenação quebra se a mensagem de erro tiver aspas, quebra de linha ou qualquer caractere especial. `createObject` devolve um objeto nativo do PA e a serialização pra JSON é automática + segura. `coalesce(x, '')` blinda contra `null` quando o campo está ausente no payload.
-
-### Passo 6 — Action: Salvar metadados JSON
-
+### Passo 6 — Salvar metadados JSON
 **+ Nova etapa** → **OneDrive for Business** → **Criar arquivo**.
-
 - **Caminho:** `/sure-backup-agent-artifacts/`
-- **Nome:** `tim_latest.json` (ou `tim_latest_@{utcNow('yyyyMMdd')}.json` se for por dia)
-- **Conteúdo do arquivo:** output da etapa `Compor Meta TIM` (o PA serializa o objeto pra JSON automaticamente)
+- **Nome:** `tim_latest_@{utcNow('yyyyMMdd')}.json`
+- **Conteúdo do arquivo:** output de `Compor Meta TIM` (o PA serializa pra JSON automaticamente)
 
-### Passo 7 — Action: Response HTTP 202
+### Passo 7 — Resposta HTTP 202
+**+ Nova etapa** → **Solicitação** → **Resposta**. Código `202`, corpo `{ "ok": true, "saved": "tim" }`.
 
-**+ Nova etapa** → **Solicitação** → **Resposta**.
-
-- **Código de Status:** `202`
-- **Corpo:** `{ "ok": true, "saved": "tim_latest.png" }`
-
-Salva o fluxo. Pega a URL HTTP do trigger.
+Salva. Pega a URL do trigger.
 
 ---
 
-## Fluxo C — "Aggregate + Send"
+## Fluxo D — "Store PPDM Artifact"
 
-**Função:** receber V+P da VM agregadora, ler TIM do OneDrive (que o Fluxo B gravou), montar mensagem combinada, postar no Teams.
+**Espelho exato do Fluxo B**, trocando `timeismoney_` por `ppdm_` e `tim_latest` por `ppdm_latest`. Recebe o PNG do PPDM da VM-PPDM (modo `ppdm`, last-known-good) e salva no OneDrive.
 
-### Passo 1 — Duplicar o fluxo existente
+> Atalho: no portal PA, abra o **Fluxo B** → **3 pontinhos → Salvar como** → nomeie `Sure Backup Agent — Store PPDM Artifact` e edite só os campos abaixo. Mais rápido que recriar do zero.
 
-A forma mais rápida é **clonar o fluxo "Send Daily Full"** (existente) e modificar.
+### Passo 1 — Nome do fluxo
+`Sure Backup Agent — Store PPDM Artifact`
 
-1. No portal PA → seu fluxo atual → **3 pontinhos** → **Salvar como**
-2. Nomear: `Sure Backup Agent — Aggregate + Send`
-3. Abrir o clone pra editar
+### Passo 2 — Schema do gatilho HTTP
+```json
+{
+  "type": "object",
+  "properties": {
+    "ppdm_image_b64": { "type": "string" },
+    "ppdm_error":     { "type": "string" },
+    "timestamp":      { "type": "string" },
+    "vm_hostname":    { "type": "string" }
+  },
+  "required": ["timestamp", "vm_hostname"]
+}
+```
+Salva. Anota a **URL HTTP POST** (vai pro keyring da VM-PPDM).
 
-### Passo 2 — Modificar schema do gatilho
+### Passo 3 — Compor binário PPDM
+**Compor** `Compor Binario PPDM`. Entradas:
+```
+base64ToBinary(triggerBody()?['ppdm_image_b64'])
+```
 
-Remove os campos TIM do schema (eles vêm do OneDrive agora, não do payload):
+### Passo 4 — Salvar PNG no OneDrive
+**OneDrive → Criar arquivo**.
+- **Caminho:** `/sure-backup-agent-artifacts/`
+- **Nome:** `ppdm_latest_@{utcNow('yyyyMMdd')}.png`
+- **Conteúdo:** output de `Compor Binario PPDM`
 
+### Passo 5 — Compor objeto de metadados
+**Compor** `Compor Meta PPDM`. Entradas:
+```
+setProperty(setProperty(setProperty(setProperty(json('{}'), 'error', coalesce(triggerBody()?['ppdm_error'], '')), 'timestamp', triggerBody()?['timestamp']), 'hostname', triggerBody()?['vm_hostname']), 'image_bytes', length(coalesce(triggerBody()?['ppdm_image_b64'], '')))
+```
+
+### Passo 6 — Salvar metadados JSON
+**OneDrive → Criar arquivo**.
+- **Caminho:** `/sure-backup-agent-artifacts/`
+- **Nome:** `ppdm_latest_@{utcNow('yyyyMMdd')}.json`
+- **Conteúdo:** output de `Compor Meta PPDM`
+
+### Passo 7 — Resposta HTTP 202
+Código `202`, corpo `{ "ok": true, "saved": "ppdm" }`.
+
+Salva. Pega a URL do trigger.
+
+> **Nota last-known-good:** no modo `ppdm`, o Python só POSTa pro Fluxo D quando a captura **dá certo** (após até 3 tentativas internas). Se falhar tudo, não POSTa — então o Fluxo D nunca recebe lixo, e o `ppdm_latest` do dia continua sendo o último print bom. Não precisa de lógica especial no fluxo pra isso.
+
+---
+
+## Fluxo C' — "Aggregate + Send" (full-split)
+
+**Função:** receber só o Veeam da VM-Veeam, ler PPDM **e** TIM do OneDrive (gravados pelos Fluxos D e B), montar a mensagem com as 3 imagens e postar no Teams.
+
+> Atalho: clone o Fluxo C existente (que já lê TIM) e adicione a leitura do PPDM. Se for criar do zero, clone o Fluxo A "Send Daily Full".
+
+### Passo 1 — Nome e schema do gatilho
+Nome: `Sure Backup Agent — Aggregate + Send (full-split)`. Schema (só Veeam vem no payload):
 ```json
 {
   "type": "object",
   "properties": {
     "veeam_image_b64": { "type": "string" },
     "veeam_error":     { "type": "string" },
-    "ppdm_image_b64":  { "type": "string" },
-    "ppdm_error":      { "type": "string" },
     "timestamp":       { "type": "string" },
     "vm_hostname":     { "type": "string" }
   },
   "required": ["timestamp", "vm_hostname"]
 }
 ```
+Salva. Anota a **URL HTTP POST** (vai pro keyring da VM-Veeam).
 
-Salva. Anota a **URL HTTP POST** (vai pro keyring da VM-V+P).
+### Passo 2 — Ler PPDM do OneDrive (2 ações)
 
-### Passo 3 — Adicionar leitura do TIM do OneDrive
+**2a. Obter PNG PPDM** → **OneDrive → "Obter conteúdo do arquivo usando caminho"**
+- **Caminho:** `/sure-backup-agent-artifacts/ppdm_latest_@{utcNow('yyyyMMdd')}.png`
 
-Logo no início do fluxo (antes de qualquer Compor), adiciona 2 ações:
+**2b. Obter meta PPDM** → **OneDrive → "Obter conteúdo do arquivo usando caminho"**
+- **Caminho:** `/sure-backup-agent-artifacts/ppdm_latest_@{utcNow('yyyyMMdd')}.json`
 
-**3a. Obter conteúdo do arquivo TIM (PNG)**
-
-**+ Nova etapa** → **OneDrive for Business** → **Obter conteúdo do arquivo usando caminho**.
-
-- **Caminho:** `/sure-backup-agent-artifacts/tim_latest.png` (ou com sufixo de data se usou variante)
-
-**3b. Obter metadados TIM (JSON)**
-
-**+ Nova etapa** → **OneDrive for Business** → **Obter conteúdo do arquivo usando caminho**.
-
-- **Caminho:** `/sure-backup-agent-artifacts/tim_latest.json`
-
-**3c. Parsear metadados TIM**
-
-**+ Nova etapa** → **Operações de Dados** → **Analisar JSON**.
-
-- **Conteúdo:** output da etapa 3b
+**2c. Analisar JSON PPDM** → **Operações de Dados → Analisar JSON**
+- **Conteúdo** (expressão — **`json(string(...))`**): `json(string(body('Obter_meta_PPDM')))`
 - **Esquema:**
-
 ```json
 {
   "type": "object",
@@ -172,111 +204,121 @@ Logo no início do fluxo (antes de qualquer Compor), adiciona 2 ações:
 }
 ```
 
-### Passo 4 — Substituir as referências TIM no fluxo
+### Passo 3 — Ler TIM do OneDrive (2 ações)
 
-Onde o fluxo antigo usava:
+**3a. Obter PNG TIM** → **"Obter conteúdo do arquivo usando caminho"**
+- **Caminho:** `/sure-backup-agent-artifacts/tim_latest_@{utcNow('yyyyMMdd')}.png`
 
-| Antes (fluxo legado) | Depois (Fluxo C) |
-|---|---|
-| `triggerBody()?['timeismoney_image_b64']` (string base64) | conteúdo binário direto da etapa 3a |
-| `triggerBody()?['timeismoney_error']` | `body('Analisar_JSON')?['error']` |
+**3b. Obter meta TIM** → **"Obter conteúdo do arquivo usando caminho"**
+- **Caminho:** `/sure-backup-agent-artifacts/tim_latest_@{utcNow('yyyyMMdd')}.json`
 
-**Mais especificamente:**
+**3c. Analisar JSON TIM** → **Analisar JSON**
+- **Conteúdo:** `json(string(body('Obter_meta_TIM')))`
+- **Esquema:** igual ao 2c.
 
-- A etapa **"Compor Binário TimeIsMoney"** que antes fazia `base64ToBinary(triggerBody()?['timeismoney_image_b64'])` agora vira só uma **Compor** apontando direto pro output da etapa 3a (já vem binário).
-- Na ação **"Postar como Usuário"**, no campo **Conteúdo Hospedado**, o terceiro objeto (TIM) muda o `contentBytes` pra apontar pra etapa 3a:
+### Passo 4 — Conteúdo Hospedado (3 imagens)
+
+Na ação **"Postar mensagem"** → **Mostrar opções avançadas** → **Conteúdo Hospedado**. Array com 3 objetos. Note a diferença: Veeam vem do **payload** (já base64), PPDM e TIM vêm do **OneDrive** (binário, precisa `base64(...)`):
 
 ```json
-{
-  "@microsoft.graph.temporaryId": "3",
-  "contentBytes": "@{body('Obter_conteudo_TIM_PNG')}",
-  "contentType": "image/png"
-}
+[
+  {
+    "@microsoft.graph.temporaryId": "1",
+    "contentBytes": "@{triggerBody()?['veeam_image_b64']}",
+    "contentType": "image/png"
+  },
+  {
+    "@microsoft.graph.temporaryId": "2",
+    "contentBytes": "@{base64(body('Obter_PNG_PPDM'))}",
+    "contentType": "image/png"
+  },
+  {
+    "@microsoft.graph.temporaryId": "3",
+    "contentBytes": "@{base64(body('Obter_PNG_TIM'))}",
+    "contentType": "image/png"
+  }
+]
 ```
 
-(o nome exato da etapa depende de como você nomeou a 3a)
+> Os nomes `Obter_PNG_PPDM` / `Obter_PNG_TIM` têm que bater **exatamente** com os nomes que você deu às ações 2a/3a (espaços viram `_`).
 
-- Na ação **Compor Mensagem HTML**, a linha do TIM muda pra:
+### Passo 5 — Mensagem HTML (clica no botão `</>` antes de colar)
 
 ```html
-<b>Time Is Money:</b> @{if(equals(body('Analisar_JSON')?['error'], ''), 'capturado', concat('AVISO: ', body('Analisar_JSON')?['error']))}<br>
+<b>Veeam:</b> @{if(equals(triggerBody()?['veeam_error'], ''), 'capturado', concat('AVISO: ', triggerBody()?['veeam_error']))}<br>
+<img src="../hostedContents/1/$value" alt="Veeam" width="600"><br><br>
+<b>PPDM:</b> @{if(equals(body('Analisar_JSON_PPDM')?['error'], ''), 'capturado', concat('AVISO: ', body('Analisar_JSON_PPDM')?['error']))}<br>
+<img src="../hostedContents/2/$value" alt="PPDM Protection Jobs" width="600"><br><br>
+<b>Time Is Money:</b> @{if(equals(body('Analisar_JSON_TIM')?['error'], ''), 'capturado', concat('AVISO: ', body('Analisar_JSON_TIM')?['error']))}<br>
 <img src="../hostedContents/3/$value" alt="Time Is Money Dashboard" width="600">
 ```
 
-### Passo 5 — (Opcional) Detectar TIM stale
+### Passo 6 — (Opcional) Avisar quando PPDM ou TIM estão atrasados
 
-Pra alertar quando o artefato TIM está velho (VM-TIM não rodou hoje):
-
-Antes da ação de postar, adiciona uma **Condição**:
-
-- **Condição:** `formatDateTime(body('Analisar_JSON')?['timestamp'], 'yyyy-MM-dd')` **é igual a** `formatDateTime(utcNow(), 'yyyy-MM-dd')`
-- **Sim:** continua normal
-- **Não:** sobrescreve o erro TIM via Compor:
-
+Pra cada produtor, dá pra comparar a data do meta com hoje e trocar a mensagem de erro. Exemplo pro PPDM, num **Compor** antes de postar:
 ```
-@{concat('TIM artefato eh do dia ', formatDateTime(body('Analisar_JSON')?['timestamp'], 'dd/MM'), ' — VM-TIM nao rodou hoje?')}
+@{if(equals(formatDateTime(body('Analisar_JSON_PPDM')?['timestamp'], 'yyyy-MM-dd'), formatDateTime(utcNow(), 'yyyy-MM-dd')), body('Analisar_JSON_PPDM')?['error'], concat('PPDM artefato eh do dia ', formatDateTime(body('Analisar_JSON_PPDM')?['timestamp'], 'dd/MM'), ' — VM-PPDM nao rodou hoje?'))}
 ```
+Usa o output desse Compor no lugar de `body('Analisar_JSON_PPDM')?['error']` no HTML. Idem pro TIM.
 
-E usa essa variável composta no lugar de `body('Analisar_JSON')?['error']` no HTML.
-
-Salva o fluxo. Pega a URL HTTP do trigger.
+Salva. Pega a URL do trigger.
 
 ---
 
-## Configurar as VMs
+## Configurar as 3 VMs
 
-### VM-TIM (modo `timeismoney`)
+Em cada VM: edita `[mode] name` no `config.toml`, salva os secrets no keyring e roda `install_task.ps1`.
 
-`config.toml`:
-
-```toml
-[mode]
-name = "timeismoney"
-```
-
-Keyring:
-
+### VM-PPDM (`mode = "ppdm"`)
 ```powershell
-# URL do Fluxo B
-python -m keyring set "sure-backup-agent/teams_webhook" "url"
-# Senha do TIM
-python -m keyring set "sure-backup-agent/timeismoney" "rootadmin@scale.com"
+# config.toml: [mode] name = "ppdm"
+python -m keyring set "sure-backup-agent/teams_webhook" "url"   # URL do Fluxo D
+python -m keyring set "sure-backup-agent/ppdm" "readonly"        # senha PPDM
 ```
+`install_task.ps1` agenda essa VM com repetição **02:00 → 07:30, a cada 30min** (last-known-good).
 
-### VM-V+P (modo `veeam_ppdm`)
-
-`config.toml`:
-
-```toml
-[mode]
-name = "veeam_ppdm"
-```
-
-Keyring:
-
+### VM-TIM (`mode = "timeismoney"`)
 ```powershell
-# URL do Fluxo C (NÃO o A!)
-python -m keyring set "sure-backup-agent/teams_webhook" "url"
-# Senha do PPDM
-python -m keyring set "sure-backup-agent/ppdm" "readonly"
+# config.toml: [mode] name = "timeismoney"
+python -m keyring set "sure-backup-agent/teams_webhook" "url"        # URL do Fluxo B
+python -m keyring set "sure-backup-agent/timeismoney" "rootadmin@scale.com"  # senha TIM
 ```
+Agenda 07:55.
+
+### VM-Veeam (`mode = "veeam"`)
+```powershell
+# config.toml: [mode] name = "veeam"
+python -m keyring set "sure-backup-agent/teams_webhook" "url"   # URL do Fluxo C' (NÃO o A!)
+```
+Agenda 08:00 (5min depois do TIM; PPDM já garantido pela madrugada).
 
 ---
 
 ## Validação end-to-end
 
-1. **Validar Fluxo B isoladamente:** roda smoke na VM-TIM → confirma no portal PA que o run de "Store TIM Artifact" foi 2xx → confirma no OneDrive que os arquivos `tim_latest.png` e `tim_latest.json` apareceram.
-2. **Validar Fluxo C isoladamente:** roda smoke na VM-V+P → confirma run 2xx no PA → mensagem combinada chega no Teams com as 3 imagens corretas (V+P do payload, TIM do OneDrive).
-3. **Validar timing:** agenda VM-TIM pras 07:55 e VM-V+P pras 08:00. Espera o ciclo diário rodar. Confirma que a mensagem no Teams tem TIM atualizado.
-4. **Validar staleness:** desliga a VM-TIM. Roda smoke na VM-V+P. A mensagem no Teams ainda chega (com TIM antigo, ou com aviso "TIM artefato eh do dia X" se você implementou o Passo 5 do Fluxo C).
+1. **Fluxo D isolado:** smoke na VM-PPDM → run 2xx no portal → `ppdm_latest_AAAAMMDD.png` aparece no OneDrive com o print real.
+2. **Fluxo B isolado:** smoke na VM-TIM → `tim_latest_AAAAMMDD.png` aparece no OneDrive.
+3. **Fluxo C' isolado:** smoke na VM-Veeam → mensagem chega no Teams com **as 3 imagens** (Veeam do payload, PPDM e TIM do OneDrive).
+4. **Last-known-good:** aponta o PPDM url pra um IP morto no `config.toml` da VM-PPDM, roda smoke → log mostra 3 tentativas + "NAO enviando — preservando ultimo artefato bom". O `ppdm_latest` no OneDrive **não muda**.
+5. **Ciclo completo:** deixa as 3 tasks agendadas rodarem (PPDM madrugada, TIM 07:55, Veeam 08:00). Confirma a mensagem da manhã.
 
 ---
 
 ## Troubleshooting
 
-| Sintoma | Diagnóstico |
+| Sintoma | Causa / fix |
 |---|---|
-| Run do Fluxo B falha em "Criar arquivo" | Arquivo já existe e a ação não está em modo overwrite. Usa "Atualizar arquivo" ou adiciona sufixo de data no nome. |
-| Run do Fluxo C falha em "Obter conteúdo do arquivo" | VM-TIM nunca rodou ou o caminho do OneDrive está diferente entre os 2 fluxos. Confere `/sure-backup-agent-artifacts/tim_latest.png` no OneDrive manualmente. |
-| Mensagem no Teams sem imagem do TIM | `hostedContents` ID `3` tá apontando pra string vazia. Confere se a etapa 3a foi referenciada certo no `contentBytes`. |
-| TIM aparece com PNG de "erro desconhecido" mesmo a captura tendo funcionado na VM-TIM | A VM-TIM enviou OK mas o Fluxo C leu uma versão velha do OneDrive. Pode ser latência de sync. Tenta atrasar a VM-V+P em mais 5min. |
+| `createObject is not defined` no Compor Meta | Trocar `createObject` por `setProperty` encadeado (Passo 5 dos fluxos B/D). |
+| `Invalid fileId` no Obter conteúdo | Usou "Obter arquivo" (pede fileId). Trocar por **"Obter conteúdo do arquivo usando caminho"**. |
+| `content must be of type JSON` no Analisar JSON | Faltou `json(string(...))` no campo Conteúdo. |
+| `Cannot convert literal to Edm.Binary` no Postar | `contentBytes` de imagem vinda do OneDrive precisa de `base64(...)`. Veeam (payload) não precisa. |
+| Run do Criar arquivo falha "já existe" | Use nome com data `_@{utcNow('yyyyMMdd')}`. |
+| Card PPDM/TIM vazio no Teams | `hostedContents` id 2/3 apontando errado, ou a ação "Obter PNG" daquele dia não achou arquivo (produtor não rodou). Confere o arquivo no OneDrive. |
+| 502 "NoResponse" no POST do agente | Olha o Run History do fluxo no portal: alguma ação interna falhou (conexão OneDrive/Teams expirada, ou arquivo do dia ausente). |
+| PPDM/TIM com data de ontem na mensagem | Produtor não rodou hoje. Pro PPDM: as repetições da madrugada devem cobrir; confere se a task `PPDM Producer` está ativa. |
+
+---
+
+## Apêndice — deploy legado (2 VMs, `veeam_ppdm`)
+
+Se em algum momento você quiser V+P juntos numa VM e só TIM separado (em vez do full-split de 3 VMs), o modo `veeam_ppdm` faz isso: captura Veeam+PPDM localmente e lê só o TIM do OneDrive. Nesse caso use o **Fluxo C** (lê só TIM) em vez do C', e a VM não precisa do Fluxo D. O schema do gatilho do Fluxo C inclui `veeam_*` **e** `ppdm_*` no payload.
