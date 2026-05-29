@@ -276,11 +276,22 @@ Quando as VMs do Veeam e do Time Is Money estão em **redes diferentes** e não 
 
 | Modo | VM faz | Fluxo PA que recebe o POST | Função do fluxo |
 |---|---|---|---|
-| `all` (legado) | V+P+TIM single-server | **A — "Send Daily Full"** (atual) | Posta no Teams direto |
-| `timeismoney` | só TIM | **B — "Store TIM Artifact"** (novo) | Salva PNG no OneDrive, não posta |
-| `veeam_ppdm` | só V+P | **C — "Aggregate + Send"** (novo) | Lê TIM do OneDrive, combina, posta no Teams |
+| `all` (legado) | V+P+TIM single-server | **A — "Send Daily Full"** | Posta no Teams direto |
+| `timeismoney` | só TIM | **B — "Store TIM Artifact"** | Salva PNG no OneDrive, não posta |
+| `ppdm` | só PPDM (last-known-good) | **D — "Store PPDM Artifact"** | Salva PNG no OneDrive, não posta. Só sobrescreve em sucesso |
+| `veeam_ppdm` | V+P juntos | **C — "Aggregate + Send"** | Lê TIM do OneDrive, combina, posta no Teams |
+| `veeam` | só Veeam (full-split) | **C' — "Aggregate + Send"** | Lê PPDM **e** TIM do OneDrive, combina, posta |
 
-**Setup completo dos fluxos B e C** em [docs/multi-server-pa-flows.md](docs/multi-server-pa-flows.md) — passo a passo com schemas, expressões e ações de cada fluxo.
+**Setup completo dos fluxos** em [docs/multi-server-pa-flows.md](docs/multi-server-pa-flows.md) — passo a passo com schemas, expressões e ações de cada fluxo.
+
+### Modo `ppdm` — last-known-good
+
+O modo `ppdm` é um produtor robusto pensado pra **rodar várias vezes de madrugada**: garante que, de manhã, o agregador sempre encontre um print recente do PPDM no OneDrive.
+
+- Cada execução tenta capturar até `capture_retry_attempts` vezes (default **3**), com `capture_retry_delay_seconds` (default **15s**) entre tentativas — ambos em `[ppdm]` no `config.toml`.
+- **Sucesso:** POSTa pro Fluxo D, que sobrescreve o artefato no OneDrive (sempre tem o print mais recente).
+- **Todas as tentativas falharam:** o agente **não envia nada** (exit 1). O artefato anterior fica intacto — nunca sobrescreve um print bom por um PNG vermelho de erro.
+- `install_task.ps1` agenda o modo `ppdm` com gatilho **repetido a cada 30min entre 02:00 e 07:30**, então mesmo que algumas execuções falhem (cert/rede), basta uma dar certo pra garantir o print da manhã.
 
 ### Configuração em cada VM
 

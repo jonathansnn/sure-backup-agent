@@ -25,7 +25,9 @@ switch ($modeName) {
     }
     "ppdm" {
         $taskName  = "Sure Backup Agent - PPDM Producer"
-        $dailyTime = "07:55"
+        # Comeca cedo e repete (ver bloco de trigger abaixo) — last-known-good:
+        # roda varias vezes ate ter um print garantido antes do agregador (08:00).
+        $dailyTime = "02:00"
     }
     "veeam" {
         $taskName  = "Sure Backup Agent - Veeam Aggregator"
@@ -62,8 +64,20 @@ if ($existing) {
 # Action: rodar o .bat
 $action = New-ScheduledTaskAction -Execute $batPath -WorkingDirectory $root
 
-# Trigger: diario as 08:00
-$trigger = New-ScheduledTaskTrigger -Daily -At $dailyTime
+# Trigger: diario as $dailyTime.
+# Modo 'ppdm' repete a cada 30min por 5h30 (02:00 -> 07:30) pra garantir um
+# print bom antes do agregador rodar (08:00). Cada execucao que falha eh no-op
+# (last-known-good): so sobrescreve o artefato quando o print da certo.
+if ($modeName -eq "ppdm") {
+    $trigger = New-ScheduledTaskTrigger -Daily -At $dailyTime
+    $repeating = New-ScheduledTaskTrigger -Once -At $dailyTime `
+        -RepetitionInterval (New-TimeSpan -Minutes 30) `
+        -RepetitionDuration (New-TimeSpan -Hours 5 -Minutes 30)
+    $trigger.Repetition = $repeating.Repetition
+    Write-Host "Trigger:   repeticao a cada 30min, 02:00 -> 07:30 (last-known-good)" -ForegroundColor Cyan
+} else {
+    $trigger = New-ScheduledTaskTrigger -Daily -At $dailyTime
+}
 
 # Principal: rodar como usuario corrente, com perfil interativo
 # (necessario porque Veeam GUI precisa de sessao Windows ativa)

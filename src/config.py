@@ -39,6 +39,11 @@ class PpdmConfig:
     viewport_width: int
     viewport_height: int
     ignore_https_errors: bool = False
+    # Modo produtor (name="ppdm"): tentativas de captura por execucao antes de
+    # desistir. Se todas falharem, o agente NAO envia (preserva o ultimo print
+    # bom no OneDrive). So tem efeito no modo 'ppdm' producer.
+    capture_retry_attempts: int = 1
+    capture_retry_delay_seconds: int = 10
 
 
 @dataclass(frozen=True)
@@ -181,6 +186,8 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
             viewport_width=data["ppdm"]["viewport_width"],
             viewport_height=data["ppdm"]["viewport_height"],
             ignore_https_errors=data["ppdm"].get("ignore_https_errors", False),
+            capture_retry_attempts=data["ppdm"].get("capture_retry_attempts", 1),
+            capture_retry_delay_seconds=data["ppdm"].get("capture_retry_delay_seconds", 10),
         ),
         timeismoney=TimeIsMoneyConfig(
             url=data["timeismoney"]["url"],

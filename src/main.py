@@ -2,19 +2,25 @@
 
 Chamado pelo Task Scheduler todo dia as 08:00 via run_daily.bat.
 
-Suporta 3 modos de operacao via config.toml [mode].name:
+Suporta 5 modos de operacao via config.toml [mode].name:
 
   all          - single-server: captura V+P+TIM, envia tudo num POST pro
                  Fluxo PA "Send Daily Full" (legado, backward-compat).
 
-  timeismoney  - VM produtora: captura TIM, POSTa pro Fluxo PA "Store TIM
-                 Artifact" (que salva o PNG no OneDrive). NAO posta no Teams.
+  timeismoney  - produtor: captura TIM, POSTa pro Fluxo "Store TIM Artifact"
+                 (salva o PNG no OneDrive). NAO posta no Teams.
 
-  veeam_ppdm   - VM agregadora: captura V+P, POSTa pro Fluxo PA
-                 "Aggregate + Send" (que le TIM do OneDrive, combina com
-                 V+P do payload, posta no Teams).
+  ppdm         - produtor: captura PPDM, POSTa pro Fluxo "Store PPDM Artifact".
+                 Semantica last-known-good: tenta N vezes; se TODAS falharem,
+                 NAO envia (preserva o ultimo print bom no OneDrive). Pensado
+                 pra rodar varias vezes de madrugada.
 
-A "ponte" entre as 2 VMs no modo split eh feita pelos fluxos PA + OneDrive.
+  veeam        - agregador full-split: captura Veeam, POSTa pro Fluxo
+                 "Aggregate + Send" que le PPDM E TIM do OneDrive e combina.
+
+  veeam_ppdm   - agregador legado: captura V+P, le so TIM do OneDrive, envia.
+
+A "ponte" entre as VMs no modo split eh feita pelos fluxos PA + OneDrive.
 Cada VM tem seu proprio `teams_webhook` no keyring com a URL do fluxo certo.
 
 Logs vao pra logs/agent.log (rotacionado diariamente, 30 dias de retencao).
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import socket
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -135,15 +142,50 @@ def _run_timeismoney_producer(cfg, log):
     return _send_and_finalize(cfg, log, payload, "TIM-only")
 
 
-def _run_ppdm_producer(cfg, log):
-    """Modo produtor PPDM: captura e POSTa pro fluxo 'Store PPDM Artifact'.
+def _capture_ppdm_with_retry(cfg, log):
+    """Captura PPDM com ate N tentativas (config [ppdm].capture_retry_attempts).
 
-    Espelha o modo timeismoney: nao envia mensagem pro Teams, so deposita
-    o PNG no OneDrive (via fluxo PA) pro agregador ler depois.
+    Retorna (image, None) na 1a tentativa que der certo, ou (None, ultimo_erro)
+    se todas falharem. Espera capture_retry_delay_seconds entre tentativas.
     """
-    ppdm_img, ppdm_err = _capture_ppdm(cfg, log)
+    attempts = max(1, cfg.ppdm.capture_retry_attempts)
+    delay = cfg.ppdm.capture_retry_delay_seconds
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        log.info("PPDM captura tentativa %d/%d...", attempt, attempts)
+        img, err = ppdm_capture.capture(cfg.ppdm)
+        if not err:
+            log.info("PPDM captura OK na tentativa %d: %d bytes", attempt, len(img))
+            return img, None
+        last_err = err
+        log.warning("PPDM tentativa %d/%d falhou: %s", attempt, attempts, err)
+        if attempt < attempts and delay > 0:
+            log.info("Aguardando %ds antes da proxima tentativa...", delay)
+            time.sleep(delay)
+    return None, last_err
+
+
+def _run_ppdm_producer(cfg, log):
+    """Modo produtor PPDM com semantica 'last known good'.
+
+    Tenta capturar ate N vezes (config [ppdm].capture_retry_attempts). Se
+    conseguir, POSTa pro fluxo 'Store PPDM Artifact' (sobrescreve o artefato
+    no OneDrive). Se TODAS falharem, NAO envia nada — assim o ultimo print
+    bem-sucedido fica preservado no OneDrive.
+
+    Pensado pra rodar varias vezes de madrugada: qualquer execucao com
+    sucesso atualiza o artefato; execucoes que falham sao no-op.
+    """
+    ppdm_img, ppdm_err = _capture_ppdm_with_retry(cfg, log)
+    if ppdm_err:
+        log.error("PPDM falhou em todas as %d tentativas: %s",
+                  max(1, cfg.ppdm.capture_retry_attempts), ppdm_err)
+        log.error("NAO enviando — preservando ultimo artefato bom no OneDrive (last-known-good)")
+        log.info("================ FIM (falha, artefato preservado) ================")
+        return 1
+    # Sucesso garantido aqui — ppdm_error=None, nunca gera PNG vermelho.
     payload = teams_sender.build_ppdm_only_payload(
-        ppdm_image=ppdm_img, ppdm_error=ppdm_err,
+        ppdm_image=ppdm_img, ppdm_error=None,
         vm_hostname=socket.gethostname(),
     )
     return _send_and_finalize(cfg, log, payload, "PPDM-only")

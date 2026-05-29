@@ -31,6 +31,11 @@ headless = true
 viewport_width = 1600
 viewport_height = 900
 ignore_https_errors = true  # PPDM em IP interno = certificado self-signed
+# Modo produtor (name="ppdm"): se a captura falhar, tenta de novo ate este total.
+# Se todas falharem, o agente NAO envia (mantem o ultimo print bom no OneDrive).
+# Pensado pra rodar varias vezes de madrugada ate ter um print garantido.
+capture_retry_attempts = 3
+capture_retry_delay_seconds = 15
 
 [timeismoney]
 url = "https://web.timeismoney.tec.br/login"
