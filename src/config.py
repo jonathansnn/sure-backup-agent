@@ -73,9 +73,11 @@ class LoggingConfig:
 # Modos de operacao do agente em deploy multi-servidor.
 # Cada VM tem seu config.toml com um valor diferente em [mode].name.
 MODE_ALL = "all"                  # captura V+P+TIM e envia (single-server, default)
-MODE_VEEAM_PPDM = "veeam_ppdm"    # captura V+P, le TIM de shared_dir, envia
-MODE_TIMEISMONEY = "timeismoney"  # captura TIM, escreve em shared_dir, NAO envia
-VALID_MODES = {MODE_ALL, MODE_VEEAM_PPDM, MODE_TIMEISMONEY}
+MODE_VEEAM_PPDM = "veeam_ppdm"    # legado split: captura V+P, le TIM do OneDrive, envia
+MODE_TIMEISMONEY = "timeismoney"  # produtor: captura TIM, posta pro Fluxo "Store TIM"
+MODE_PPDM = "ppdm"                # produtor: captura PPDM, posta pro Fluxo "Store PPDM"
+MODE_VEEAM = "veeam"              # agregador full-split: captura V, le P+TIM do OneDrive, envia
+VALID_MODES = {MODE_ALL, MODE_VEEAM_PPDM, MODE_TIMEISMONEY, MODE_PPDM, MODE_VEEAM}
 
 
 @dataclass(frozen=True)
@@ -145,10 +147,10 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
 
     # Quais secrets exigir depende do modo. Cada modo POSTa pra um fluxo PA
     # diferente, mas todos usam o mesmo NOME de secret (teams_webhook) — o
-    # VALOR muda por VM. Modo TIM nao precisa de senha PPDM; modo V+P nao
-    # precisa de senha TIM.
+    # VALOR muda por VM. Cada modo so exige os secrets das fontes que ele
+    # captura localmente (as outras vem do OneDrive via fluxo agregador).
     needs_webhook = True
-    needs_ppdm = mode_name in (MODE_ALL, MODE_VEEAM_PPDM) and require_ppdm_password
+    needs_ppdm = mode_name in (MODE_ALL, MODE_VEEAM_PPDM, MODE_PPDM) and require_ppdm_password
     needs_tim = mode_name in (MODE_ALL, MODE_TIMEISMONEY) and require_ppdm_password
 
     webhook_url = _get_secret(service_teams, "url") if needs_webhook else ""

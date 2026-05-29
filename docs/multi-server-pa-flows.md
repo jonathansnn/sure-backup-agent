@@ -73,19 +73,27 @@ base64ToBinary(triggerBody()?['timeismoney_image_b64'])
 >
 > **Solução mais simples:** use a ação **"Criar arquivo"** com nome único por execução tipo `tim_latest_@{utcNow('yyyyMMdd')}.png`. Aí cada dia tem seu arquivo. O Fluxo C lê o do dia atual.
 
-### Passo 5 — Action: Salvar metadados JSON
+### Passo 5 — Action: Compor objeto de metadados
+
+**+ Nova etapa** → **Operações de Dados** → **Compor**. Nomear `Compor Meta TIM`.
+
+No campo **Entradas**, cola **só** essa expressão (clica em "Expressão" / `fx`, cola, OK):
+
+```
+createObject('error', coalesce(triggerBody()?['timeismoney_error'], ''), 'timestamp', triggerBody()?['timestamp'], 'hostname', triggerBody()?['vm_hostname'], 'image_bytes', length(coalesce(triggerBody()?['timeismoney_image_b64'], '')))
+```
+
+> Por que `createObject` em vez de montar JSON via `concat` de strings? Construir JSON por concatenação quebra se a mensagem de erro tiver aspas, quebra de linha ou qualquer caractere especial. `createObject` devolve um objeto nativo do PA e a serialização pra JSON é automática + segura. `coalesce(x, '')` blinda contra `null` quando o campo está ausente no payload.
+
+### Passo 6 — Action: Salvar metadados JSON
 
 **+ Nova etapa** → **OneDrive for Business** → **Criar arquivo**.
 
 - **Caminho:** `/sure-backup-agent-artifacts/`
 - **Nome:** `tim_latest.json` (ou `tim_latest_@{utcNow('yyyyMMdd')}.json` se for por dia)
-- **Conteúdo:** expressão (use o modo HTML/expressão pra colar este JSON):
+- **Conteúdo do arquivo:** output da etapa `Compor Meta TIM` (o PA serializa o objeto pra JSON automaticamente)
 
-```
-@{json(concat('{"error":"', replace(triggerBody()?['timeismoney_error'], '"', '\\"'), '","timestamp":"', triggerBody()?['timestamp'], '","hostname":"', triggerBody()?['vm_hostname'], '","image_bytes":', length(triggerBody()?['timeismoney_image_b64']), '}'))}
-```
-
-### Passo 6 — Action: Response HTTP 202
+### Passo 7 — Action: Response HTTP 202
 
 **+ Nova etapa** → **Solicitação** → **Resposta**.
 

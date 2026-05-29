@@ -105,6 +105,55 @@ def build_tim_only_payload(
     }
 
 
+def build_ppdm_only_payload(
+    ppdm_image: Optional[bytes],
+    ppdm_error: Optional[str],
+    vm_hostname: str,
+    timestamp: Optional[datetime] = None,
+) -> dict:
+    """Payload pro Fluxo D (Store PPDM Artifact) — modo='ppdm'.
+
+    Espelha build_tim_only_payload mas pra PPDM. O fluxo D nao posta no Teams;
+    salva o PNG no OneDrive pra o agregador (Fluxo C') ler depois.
+    """
+    raw_ts = timestamp or datetime.now(timezone.utc)
+    ts_utc_bare = raw_ts.astimezone(timezone.utc).replace(tzinfo=None)
+    ppdm_bytes = ppdm_image if ppdm_image else render_error_png(
+        "PPDM", ppdm_error or "erro desconhecido"
+    )
+    return {
+        "ppdm_image_b64": base64.b64encode(ppdm_bytes).decode("ascii"),
+        "ppdm_error": ppdm_error or "",
+        "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
+        "vm_hostname": vm_hostname,
+    }
+
+
+def build_veeam_only_payload(
+    veeam_image: Optional[bytes],
+    veeam_error: Optional[str],
+    vm_hostname: str,
+    timestamp: Optional[datetime] = None,
+) -> dict:
+    """Payload pro Fluxo C' (Aggregate + Send V-only) — modo='veeam'.
+
+    Em deploy full-split (V/P/T em 3 VMs distintas), a VM-Veeam so manda
+    Veeam. O fluxo agregador le PPDM E TIM do OneDrive (gravados pelos
+    fluxos produtores correspondentes) e combina os 3 numa mensagem.
+    """
+    raw_ts = timestamp or datetime.now(timezone.utc)
+    ts_utc_bare = raw_ts.astimezone(timezone.utc).replace(tzinfo=None)
+    veeam_bytes = veeam_image if veeam_image else render_error_png(
+        "VEEAM", veeam_error or "erro desconhecido"
+    )
+    return {
+        "veeam_image_b64": base64.b64encode(veeam_bytes).decode("ascii"),
+        "veeam_error": veeam_error or "",
+        "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
+        "vm_hostname": vm_hostname,
+    }
+
+
 def build_veeam_ppdm_payload(
     veeam_image: Optional[bytes],
     veeam_error: Optional[str],

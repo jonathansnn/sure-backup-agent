@@ -50,7 +50,18 @@ def capture(cfg: PpdmConfig, debug_dir: Optional[Path] = None) -> tuple[Optional
 def _capture_with_playwright(
     pw: Playwright, cfg: PpdmConfig, debug_dir: Optional[Path]
 ) -> tuple[Optional[bytes], Optional[str]]:
-    browser: Browser = pw.chromium.launch(headless=cfg.headless)
+    # Flags de launch agressivas pro contexto PPDM:
+    # --no-proxy-server: ignora proxy do usuario Windows (HKCU IE settings).
+    #     PPDM eh IP interno; passar por proxy so atrasa (ou trava com proxy ruim).
+    # --ignore-certificate-errors: pula validacao TLS completamente (nao so
+    #     ignora erro). PPDM tem cert self-signed; sem essa flag, Chromium
+    #     tenta consultar OCSP/CRL responders que nao existem pra self-signed,
+    #     ficando 30s+ ate timeout. Edge/Chrome do sistema cacheia aceitacao no
+    #     profile do usuario; Playwright usa profile efemero e re-valida cada run.
+    browser: Browser = pw.chromium.launch(
+        headless=cfg.headless,
+        args=["--no-proxy-server", "--ignore-certificate-errors"],
+    )
     try:
         context = browser.new_context(
             viewport={"width": cfg.viewport_width, "height": cfg.viewport_height},

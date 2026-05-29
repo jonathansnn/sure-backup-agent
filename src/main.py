@@ -50,6 +50,10 @@ def main() -> int:
 
     if cfg.mode.name == config.MODE_TIMEISMONEY:
         return _run_timeismoney_producer(cfg, log)
+    if cfg.mode.name == config.MODE_PPDM:
+        return _run_ppdm_producer(cfg, log)
+    if cfg.mode.name == config.MODE_VEEAM:
+        return _run_veeam_aggregator(cfg, log)
     if cfg.mode.name == config.MODE_VEEAM_PPDM:
         return _run_veeam_ppdm_aggregator(cfg, log)
     return _run_all(cfg, log)
@@ -129,6 +133,34 @@ def _run_timeismoney_producer(cfg, log):
         vm_hostname=socket.gethostname(),
     )
     return _send_and_finalize(cfg, log, payload, "TIM-only")
+
+
+def _run_ppdm_producer(cfg, log):
+    """Modo produtor PPDM: captura e POSTa pro fluxo 'Store PPDM Artifact'.
+
+    Espelha o modo timeismoney: nao envia mensagem pro Teams, so deposita
+    o PNG no OneDrive (via fluxo PA) pro agregador ler depois.
+    """
+    ppdm_img, ppdm_err = _capture_ppdm(cfg, log)
+    payload = teams_sender.build_ppdm_only_payload(
+        ppdm_image=ppdm_img, ppdm_error=ppdm_err,
+        vm_hostname=socket.gethostname(),
+    )
+    return _send_and_finalize(cfg, log, payload, "PPDM-only")
+
+
+def _run_veeam_aggregator(cfg, log):
+    """Modo agregador full-split: captura Veeam, POSTa pro fluxo Aggregate+Send.
+
+    O fluxo PA le PPDM E TIM do OneDrive (gravados pelos respectivos
+    produtores) e combina os 3 numa mensagem unica pro Teams.
+    """
+    veeam_img, veeam_err = _capture_veeam(cfg, log)
+    payload = teams_sender.build_veeam_only_payload(
+        veeam_image=veeam_img, veeam_error=veeam_err,
+        vm_hostname=socket.gethostname(),
+    )
+    return _send_and_finalize(cfg, log, payload, "Veeam-only (P+TIM vem do OneDrive)")
 
 
 def _run_veeam_ppdm_aggregator(cfg, log):

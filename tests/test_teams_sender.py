@@ -170,6 +170,67 @@ def test_build_veeam_ppdm_payload_propagates_partial_failure():
     assert payload["ppdm_error"] == "PPDM offline"
 
 
+# ---------- build_ppdm_only_payload (modo split: produtor PPDM) ----------
+
+def test_build_ppdm_only_payload_includes_only_ppdm_fields():
+    """Payload do Fluxo D (Store PPDM Artifact) nao inclui veeam nem TIM."""
+    ts = datetime(2026, 5, 24, 8, 0, 0, tzinfo=timezone.utc)
+    payload = teams_sender.build_ppdm_only_payload(
+        ppdm_image=b"\x89PNG_PPDM_REAL",
+        ppdm_error=None,
+        vm_hostname="VM-PPDM",
+        timestamp=ts,
+    )
+    assert set(payload.keys()) == {
+        "ppdm_image_b64", "ppdm_error", "timestamp", "vm_hostname",
+    }
+    assert payload["ppdm_image_b64"] == base64.b64encode(b"\x89PNG_PPDM_REAL").decode("ascii")
+    assert payload["ppdm_error"] == ""
+    assert payload["vm_hostname"] == "VM-PPDM"
+    assert payload["timestamp"] == "2026-05-24T08:00:00"
+
+
+def test_build_ppdm_only_payload_generates_error_png_on_failure():
+    payload = teams_sender.build_ppdm_only_payload(
+        ppdm_image=None,
+        ppdm_error="PPDM unreachable",
+        vm_hostname="VM-PPDM",
+    )
+    assert payload["ppdm_image_b64"] != ""
+    assert base64.b64decode(payload["ppdm_image_b64"]).startswith(b"\x89PNG")
+    assert payload["ppdm_error"] == "PPDM unreachable"
+
+
+# ---------- build_veeam_only_payload (modo split: agregador V-only) ----------
+
+def test_build_veeam_only_payload_includes_only_veeam_fields():
+    """Payload do Fluxo C' (Aggregate V+OneDrive(P,T)) so manda Veeam."""
+    ts = datetime(2026, 5, 24, 8, 0, 0, tzinfo=timezone.utc)
+    payload = teams_sender.build_veeam_only_payload(
+        veeam_image=b"\x89PNG_VEEAM",
+        veeam_error=None,
+        vm_hostname="VM-VEEAM",
+        timestamp=ts,
+    )
+    assert set(payload.keys()) == {
+        "veeam_image_b64", "veeam_error", "timestamp", "vm_hostname",
+    }
+    assert "ppdm_image_b64" not in payload
+    assert "timeismoney_image_b64" not in payload
+    assert payload["timestamp"] == "2026-05-24T08:00:00"
+
+
+def test_build_veeam_only_payload_generates_error_png_on_failure():
+    payload = teams_sender.build_veeam_only_payload(
+        veeam_image=None,
+        veeam_error="Veeam window not found",
+        vm_hostname="VM-VEEAM",
+    )
+    assert payload["veeam_image_b64"] != ""
+    assert base64.b64decode(payload["veeam_image_b64"]).startswith(b"\x89PNG")
+    assert payload["veeam_error"] == "Veeam window not found"
+
+
 # ---------- _should_retry ----------
 
 @pytest.mark.parametrize("status,expected", [

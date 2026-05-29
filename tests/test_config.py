@@ -173,6 +173,41 @@ def test_mode_timeismoney_does_not_require_webhook_nor_ppdm(mocker, tmp_path):
     assert c.ppdm.password == ""
 
 
+def test_mode_ppdm_requires_ppdm_secret_but_not_tim(mocker, tmp_path):
+    """Modo produtor PPDM: webhook (Fluxo D) + senha PPDM. TIM ignorado."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "ppdm")
+    secrets = {
+        ("test/teams", "url"): "wh-ppdm-upload",
+        ("test/ppdm", "svc_test"): "p",
+    }
+    mocker.patch(
+        "src.config.keyring.get_password",
+        side_effect=lambda s, u: secrets.get((s, u)),
+    )
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.mode.name == cfg.MODE_PPDM
+    assert c.ppdm.password == "p"
+    assert c.timeismoney.password == ""
+    assert c.teams.webhook_url == "wh-ppdm-upload"
+
+
+def test_mode_veeam_aggregator_does_not_require_ppdm_nor_tim(mocker, tmp_path):
+    """Modo agregador full-split: so webhook (Fluxo C'). P+TIM vem do OneDrive."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    secrets = {("test/teams", "url"): "wh-veeam-aggregator"}
+    mocker.patch(
+        "src.config.keyring.get_password",
+        side_effect=lambda s, u: secrets.get((s, u)),
+    )
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.mode.name == cfg.MODE_VEEAM
+    assert c.ppdm.password == ""
+    assert c.timeismoney.password == ""
+    assert c.teams.webhook_url == "wh-veeam-aggregator"
+
+
 def test_invalid_mode_raises(mocker, tmp_path):
     mocker.patch("src.config.PROJECT_ROOT", tmp_path)
     path = _write_toml_with_mode(tmp_path, "modo_invalido")

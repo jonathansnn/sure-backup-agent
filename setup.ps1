@@ -46,9 +46,11 @@ Write-Host "`n[5/5] Configurando secrets no Windows Credential Manager"
 # Le o modo do config.toml pra saber quais secrets sao relevantes nessa VM
 $modeName = & $venvPython -c "import tomllib; print(tomllib.load(open(r'$root\config.toml','rb')).get('mode',{}).get('name','all'))"
 Write-Host "  Modo desta VM: $modeName" -ForegroundColor Cyan
-Write-Host "    all          -> webhook 'Send Daily Full'   + senha PPDM + senha TIM"
-Write-Host "    veeam_ppdm   -> webhook 'Aggregate + Send'  + senha PPDM"
-Write-Host "    timeismoney  -> webhook 'Store TIM Artifact'+ senha TIM"
+Write-Host "    all          -> webhook 'Send Daily Full'    + senha PPDM + senha TIM"
+Write-Host "    veeam_ppdm   -> webhook 'Aggregate + Send'   + senha PPDM   (legado split)"
+Write-Host "    timeismoney  -> webhook 'Store TIM Artifact' + senha TIM"
+Write-Host "    ppdm         -> webhook 'Store PPDM Artifact'+ senha PPDM"
+Write-Host "    veeam        -> webhook 'Aggregate V (P+T via OneDrive)'  (sem senha extra)"
 Write-Host ""
 Write-Host "  IMPORTANTE: a URL do webhook desta VM deve apontar pro fluxo PA correto"
 Write-Host "  do modo acima. Mesmo NOME de secret em todas as VMs (teams_webhook),"
@@ -56,7 +58,7 @@ Write-Host "  VALOR diferente apontando pro fluxo certo de cada uma." -Foregroun
 Write-Host ""
 
 $needsWebhook = $true
-$needsPpdm    = ($modeName -eq "all" -or $modeName -eq "veeam_ppdm")
+$needsPpdm    = ($modeName -eq "all" -or $modeName -eq "veeam_ppdm" -or $modeName -eq "ppdm")
 $needsTim     = ($modeName -eq "all" -or $modeName -eq "timeismoney")
 
 # 5a. Webhook URL (so se preciso)

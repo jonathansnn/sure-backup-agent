@@ -119,7 +119,7 @@ Na **VM-alvo** (a que tem o Veeam Console instalado, geralmente um Windows Serve
 - **Windows 10/11 ou Windows Server** com sessão interativa **permanentemente logada** (a tarefa agendada precisa de GUI ativa pro `pywinauto` controlar o Veeam Console — protetor de tela e lock screen quebram isso).
 - **Python 3.11+** instalado e disponível no PATH (`python --version` deve responder).
 - **Veeam Backup & Replication Console** instalado e configurado (login com credenciais Windows do usuário corrente).
-- Acesso de rede ao **PPDM** (default na config: `https://192.168.20.200/`).
+- Acesso de rede ao **PPDM** (a URL é configurada em `config.toml`).
 - Acesso à internet (pro Time Is Money, pro Chromium e pro POST do Power Automate).
 - **Usuário read-only no PPDM** com permissão de ver `Jobs > Protection Jobs`.
 - **Usuário admin no Time Is Money** (`rootadmin@scale.com` ou equivalente).
@@ -163,7 +163,7 @@ crop_right = 0
 crop_bottom = 60                 # remove status bar inferior
 
 [ppdm]
-url = "https://192.168.20.200/"
+url = "https://<ip-ou-hostname-do-ppdm>/"
 username = "readonly"
 login_timeout_seconds = 30
 browser = "chromium"

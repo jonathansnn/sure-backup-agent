@@ -8,7 +8,7 @@ Procedimento pra subir o projeto na máquina que tem o Veeam Console instalado (
 - **Python 3.11 ou superior** instalado e no PATH (testar: abrir PowerShell e rodar `python --version`)
 - Acesso à internet (pra baixar dependências e o Chromium do Playwright)
 - Veeam Backup & Replication Console instalado e funcional (login com credenciais Windows do usuário corrente)
-- Acesso ao PPDM (URL https://192.168.20.200/, usuário `readonly`)
+- Acesso ao PPDM (URL configurada em `config.toml`, usuário `readonly`)
 - Senha do usuário PPDM `readonly` em mãos
 - URL do trigger HTTP do Power Automate em mãos (mesma que está no Credential Manager da máquina atual — copiar de lá)
 

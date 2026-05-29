@@ -23,6 +23,14 @@ switch ($modeName) {
         $taskName  = "Sure Backup Agent - TIM Producer"
         $dailyTime = "07:55"
     }
+    "ppdm" {
+        $taskName  = "Sure Backup Agent - PPDM Producer"
+        $dailyTime = "07:55"
+    }
+    "veeam" {
+        $taskName  = "Sure Backup Agent - Veeam Aggregator"
+        $dailyTime = "08:00"
+    }
     "veeam_ppdm" {
         $taskName  = "Sure Backup Agent - Veeam+PPDM Aggregator"
         $dailyTime = "08:00"

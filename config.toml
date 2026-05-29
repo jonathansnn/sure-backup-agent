@@ -23,7 +23,7 @@ crop_right = 0       # 0 = mantém todas as colunas até a direita
 crop_bottom = 60     # remove status bar inferior (~30-50px + borda)
 
 [ppdm]
-url = "https://192.168.20.200/"
+url = "https://CHANGE_ME_PPDM_HOST/"  # IP ou hostname do PPDM no seu ambiente
 username = "readonly"
 login_timeout_seconds = 30
 browser = "chromium"
