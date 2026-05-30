@@ -52,33 +52,27 @@ Write-Host "    timeismoney  -> webhook 'Store TIM Artifact' + senha TIM"
 Write-Host "    ppdm         -> webhook 'Store PPDM Artifact'+ senha PPDM"
 Write-Host "    veeam        -> webhook 'Aggregate V (P+T via OneDrive)'  (sem senha extra)"
 Write-Host ""
-Write-Host "  IMPORTANTE: a URL do webhook desta VM deve apontar pro fluxo PA correto"
-Write-Host "  do modo acima. Mesmo NOME de secret em todas as VMs (teams_webhook),"
-Write-Host "  VALOR diferente apontando pro fluxo certo de cada uma." -ForegroundColor Yellow
+Write-Host "  A URL do webhook agora vem do config.local.toml (fora do git), nao do keyring."
 Write-Host ""
 
-$needsWebhook = $true
 $needsPpdm    = ($modeName -eq "all" -or $modeName -eq "veeam_ppdm" -or $modeName -eq "ppdm")
 $needsTim     = ($modeName -eq "all" -or $modeName -eq "timeismoney")
 
-# 5a. Webhook URL (so se preciso)
-if ($needsWebhook) {
-    $existingWebhook = & $venvPython -c "import keyring; v = keyring.get_password('sure-backup-agent/teams_webhook', 'url'); print('OK' if v else 'MISSING')"
-    if ($existingWebhook.Trim() -eq "OK") {
-        Write-Host "  Webhook URL ja configurada - pulando" -ForegroundColor Yellow
+# 5a. Webhook URL — agora via config.local.toml (gitignored), nao keyring.
+$localCfg = Join-Path $root "config.local.toml"
+if (Test-Path $localCfg) {
+    $hasUrl = & $venvPython -c "import tomllib; w=tomllib.load(open(r'$localCfg','rb')).get('webhooks',{}); print('OK' if (w.get('$modeName') or w.get('default')) else 'MISSING')"
+    if ($hasUrl.Trim() -eq "OK") {
+        Write-Host "  Webhook ('$modeName') ja preenchido em config.local.toml - ok" -ForegroundColor Green
     } else {
-        $webhookUrl = Read-Host -Prompt "  Cole aqui a URL HTTP do trigger do Power Automate"
-        if ([string]::IsNullOrWhiteSpace($webhookUrl)) {
-            Write-Host "  URL vazia - pulando (configure depois com: python -m keyring set sure-backup-agent/teams_webhook url)" -ForegroundColor Yellow
-        } else {
-            $env:WEBHOOK_TMP = $webhookUrl
-            & $venvPython -c "import os, keyring; keyring.set_password('sure-backup-agent/teams_webhook', 'url', os.environ['WEBHOOK_TMP'])"
-            Remove-Item Env:\WEBHOOK_TMP
-            Write-Host "  Webhook URL salva" -ForegroundColor Green
-        }
+        Write-Host "  config.local.toml existe mas [webhooks].$modeName esta vazio." -ForegroundColor Yellow
+        Write-Host "  Edite e cole a URL do fluxo PA desse modo." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  Webhook URL nao exigida pelo modo '$modeName' - pulando" -ForegroundColor DarkGray
+    Write-Host "  Falta o config.local.toml. Crie a partir do exemplo:" -ForegroundColor Yellow
+    Write-Host "    copy config.local.toml.example config.local.toml" -ForegroundColor Cyan
+    Write-Host "  Depois edite [webhooks].$modeName com a URL do fluxo PA correto." -ForegroundColor Cyan
+    Write-Host "  (config.local.toml e gitignored — URLs reais nunca vao pro repo.)"
 }
 
 # 5b. Senha PPDM (so se preciso)

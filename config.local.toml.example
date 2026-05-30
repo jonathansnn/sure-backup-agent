@@ -1,0 +1,20 @@
+# config.local.toml — overrides locais, FORA do git (este .example eh versionado;
+# o config.local.toml real eh gitignored via *.local.toml no .gitignore).
+#
+# COMO USAR:
+#   1. Copie este arquivo:  copy config.local.toml.example config.local.toml
+#   2. Preencha a(s) URL(s) do(s) fluxo(s) Power Automate que esta maquina usa.
+#   3. Pronto — o loader mescla este arquivo por cima do config.toml.
+#
+# Voce pode deixar so a entrada do modo desta maquina, ou listar todas (so a do
+# [mode].name ativo eh usada). Em 2 checkouts no mesmo servidor, cada um tem seu
+# config.local.toml apontando pro fluxo certo — sem colisao de keyring.
+
+[webhooks]
+# Cole as URLs reais (com sig=). Deixe "" nas que nao usa.
+all         = ""
+ppdm        = "https://default....environment.api.powerplatform.com/.../Store_PPDM..."
+timeismoney = ""
+veeam       = "https://default....environment.api.powerplatform.com/.../Aggregate_Send..."
+veeam_ppdm  = ""
+# default   = ""   # URL unica pra qualquer modo sem entrada propria

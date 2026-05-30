@@ -9,7 +9,7 @@
 #
 # Cada VM deve ter sua propria URL de fluxo PA no keyring 'sure-backup-agent/teams_webhook'
 # (mesmo NOME de secret em todas as VMs, VALOR diferente apontando pro fluxo certo).
-name = "all"
+name = "ppdm"
 
 [veeam]
 console_path = "C:\\Program Files\\Veeam\\Backup and Replication\\Console\\veeam.backup.shell.exe"
@@ -23,7 +23,7 @@ crop_right = 0       # 0 = mantém todas as colunas até a direita
 crop_bottom = 60     # remove status bar inferior (~30-50px + borda)
 
 [ppdm]
-url = "https://CHANGE_ME_PPDM_HOST/"  # IP ou hostname do PPDM no seu ambiente
+url = "https://192.168.20.200/"  # IP ou hostname do PPDM no seu ambiente
 username = "readonly"
 login_timeout_seconds = 30
 browser = "chromium"
@@ -58,12 +58,32 @@ http_timeout_seconds = 30
 retry_attempts = 3
 retry_backoff_seconds = 5
 
+[webhooks]
+# URL do gatilho HTTP do fluxo Power Automate, UMA por rotina/modo. O modo ativo
+# ([mode].name) seleciona a sua. Preencha so a(s) que esta maquina usa.
+#
+# >>> SEGURANCA <<< Estas URLs contem 'sig=' (chave secreta — quem tem a URL
+# dispara o fluxo). Este arquivo eh VERSIONADO e o repo eh PUBLICO. NAO cole
+# URLs reais aqui. Crie um 'config.local.toml' (ja gitignored) ao lado deste,
+# com a mesma secao [webhooks] e as URLs reais — o loader mescla os dois.
+# Veja config.local.toml.example.
+#
+# Resolucao: config.local.toml > config.toml > keyring (fallback legado).
+all         = ""   # single-server: Fluxo A "Send Daily Full"
+ppdm        = ""   # produtor PPDM:  Fluxo D "Store PPDM Artifact"
+timeismoney = ""   # produtor TIM:   Fluxo B "Store TIM Artifact"
+veeam       = ""   # agregador:      Fluxo C' "Aggregate + Send"
+veeam_ppdm  = ""   # agregador V+P:  Fluxo C "Aggregate + Send"
+# default   = ""   # (opcional) URL unica que serve qualquer modo sem entrada propria
+
 [logging]
 log_dir = "logs"
 level = "INFO"
 
 [keyring]
-# Nomes dos targets no Windows Credential Manager
+# Nomes dos targets no Windows Credential Manager.
+# NOTA: service_teams_webhook agora eh so FALLBACK legado — o webhook vem de
+# [webhooks] no config.local.toml. As senhas (PPDM/TIM) continuam aqui.
 service_ppdm = "sure-backup-agent/ppdm"
 service_timeismoney = "sure-backup-agent/timeismoney"
 service_teams_webhook = "sure-backup-agent/teams_webhook"

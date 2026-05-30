@@ -199,32 +199,38 @@ service_timeismoney = "sure-backup-agent/timeismoney"
 service_teams_webhook = "sure-backup-agent/teams_webhook"
 ```
 
-### Secrets no Windows Credential Manager
+### URLs dos webhooks — `config.local.toml`
 
-Setados **uma vez por máquina, por usuário Windows** (o keyring é per-user/per-machine). Sempre use o mesmo usuário que vai rodar o Task Scheduler.
+As URLs dos fluxos Power Automate ficam num **`config.local.toml`** (gitignored), na seção `[webhooks]`, uma por modo. O `config.toml` versionado só tem placeholders vazios — assim as URLs (que contêm `sig=` secreto) **nunca vão pro repo público**.
 
 ```powershell
-# 1. Senha do usuário read-only do PPDM (username = readonly)
+copy config.local.toml.example config.local.toml
+notepad config.local.toml   # preenche [webhooks].<modo> desta máquina
+```
+
+```toml
+[webhooks]
+ppdm  = "https://default....powerplatform.com/.../Store_PPDM..."
+veeam = "https://default....powerplatform.com/.../Aggregate_Send..."
+```
+
+Só a entrada do `[mode].name` ativo é usada. **Vantagem:** 2 checkouts no mesmo servidor podem ter URLs diferentes (cada um seu `config.local.toml`), sem colisão. Resolução: `config.local.toml` → `config.toml` → keyring (fallback legado).
+
+### Senhas — Windows Credential Manager
+
+Senhas continuam no keyring, **uma vez por máquina/usuário** (o mesmo que roda o Task Scheduler):
+
+```powershell
+# Senha do usuário read-only do PPDM (username = readonly)
 python -m keyring set "sure-backup-agent/ppdm" "readonly"
 
-# 2. Senha do admin Time Is Money (username = rootadmin@scale.com — bate com config.toml)
+# Senha do admin Time Is Money (username bate com config.toml)
 python -m keyring set "sure-backup-agent/timeismoney" "rootadmin@scale.com"
-
-# 3. URL HTTP do trigger do Power Automate (username = "url")
-python -m keyring set "sure-backup-agent/teams_webhook" "url"
 ```
 
-Cada comando abre um prompt invisível ("Password for ... :"). Cole o valor e Enter — não aparecem caracteres digitados, é normal.
+Cada comando abre um prompt invisível ("Password for ... :"). Cole o valor e Enter — não aparecem caracteres, é normal.
 
-**Validar:**
-
-```powershell
-python -m keyring get "sure-backup-agent/ppdm" "readonly"
-python -m keyring get "sure-backup-agent/timeismoney" "rootadmin@scale.com"
-python -m keyring get "sure-backup-agent/teams_webhook" "url"
-```
-
-> ⚠️ **Nunca** cole secrets como argumentos de comando — eles ficariam no histórico do PowerShell. O prompt invisível é seguro.
+> ⚠️ **Nunca** cole secrets como argumentos de comando — ficariam no histórico do PowerShell. O prompt invisível (senhas) e o `config.local.toml` gitignored (URLs) são os caminhos seguros.
 
 ## Power Automate — fluxo Teams
 

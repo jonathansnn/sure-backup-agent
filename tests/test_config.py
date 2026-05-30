@@ -215,6 +215,93 @@ def test_invalid_mode_raises(mocker, tmp_path):
         cfg.load(path=path, require_ppdm_password=False)
 
 
+# ---------- webhooks via config ([webhooks] + config.local.toml) ----------
+
+def _append(path: Path, extra: str) -> Path:
+    path.write_text(path.read_text(encoding="utf-8") + textwrap.dedent(extra), encoding="utf-8")
+    return path
+
+
+def test_webhook_from_config_section_no_keyring(mocker, tmp_path):
+    """[webhooks].<modo> no config dispensa o keyring pro webhook."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    _append(path, """
+        [webhooks]
+        veeam = "https://flow-c-linha"
+    """)
+    # keyring nao tem webhook; nem deve ser consultado pra ele
+    mocker.patch("src.config.keyring.get_password", return_value=None)
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.teams.webhook_url == "https://flow-c-linha"
+
+
+def test_webhook_multiple_urls_mode_selects_right_one(mocker, tmp_path):
+    """Varias URLs no mesmo arquivo; o modo ativo escolhe a sua."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "ppdm")
+    _append(path, """
+        [webhooks]
+        ppdm = "https://flow-d-ppdm"
+        veeam = "https://flow-c-veeam"
+        timeismoney = "https://flow-b-tim"
+    """)
+    secrets = {("test/ppdm", "svc_test"): "p"}
+    mocker.patch("src.config.keyring.get_password", side_effect=lambda s, u: secrets.get((s, u)))
+    c = cfg.load(path=path, require_ppdm_password=True)
+    assert c.teams.webhook_url == "https://flow-d-ppdm"
+
+
+def test_webhook_default_fallback_when_mode_absent(mocker, tmp_path):
+    """Sem entrada pro modo, usa [webhooks].default."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    _append(path, """
+        [webhooks]
+        default = "https://flow-unico"
+    """)
+    mocker.patch("src.config.keyring.get_password", return_value=None)
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.teams.webhook_url == "https://flow-unico"
+
+
+def test_config_local_toml_overrides_base(mocker, tmp_path):
+    """config.local.toml (gitignored) sobrepoe o config.toml versionado."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    _append(path, """
+        [webhooks]
+        veeam = "PLACEHOLDER_NAO_USAR"
+    """)
+    # arquivo local (mesma pasta) com a URL real
+    (tmp_path / "config.local.toml").write_text(textwrap.dedent("""
+        [webhooks]
+        veeam = "https://url-real-do-local"
+    """), encoding="utf-8")
+    mocker.patch("src.config.keyring.get_password", return_value=None)
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.teams.webhook_url == "https://url-real-do-local"
+
+
+def test_webhook_falls_back_to_keyring_when_config_empty(mocker, tmp_path):
+    """Sem [webhooks], cai no keyring legado (retrocompat)."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    mocker.patch("src.config.keyring.get_password",
+                 side_effect=lambda s, u: "wh-legado" if s == "test/teams" else None)
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.teams.webhook_url == "wh-legado"
+
+
+def test_webhook_raises_when_nowhere(mocker, tmp_path):
+    """Sem [webhooks] e sem keyring -> ConfigError claro."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml_with_mode(tmp_path, "veeam")
+    mocker.patch("src.config.keyring.get_password", return_value=None)
+    with pytest.raises(cfg.ConfigError, match="[Ww]ebhook"):
+        cfg.load(path=path, require_ppdm_password=False)
+
+
 def test_load_raises_when_toml_missing(tmp_path):
     with pytest.raises(cfg.ConfigError, match="não encontrado"):
         cfg.load(path=tmp_path / "nope.toml")

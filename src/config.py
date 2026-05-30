@@ -121,22 +121,65 @@ def _get_secret(service: str, username: str) -> str:
     return value
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge recursivo: tabelas aninhadas mesclam; escalares do override vencem.
+
+    Usado pra sobrepor o config.toml (versionado, com placeholders) com o
+    config.local.toml (gitignored, com URLs/valores reais).
+    """
+    out = dict(base)
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def _resolve_webhook(data: dict, mode_name: str, service_teams: str) -> str:
+    """Resolve a URL do webhook do Power Automate pro modo atual.
+
+    Prioridade:
+      1. [webhooks].<modo>   no config (real vem do config.local.toml, gitignored)
+      2. [webhooks].default  no config (URL unica que serve qualquer modo)
+      3. keyring service_teams_webhook  (fallback legado dos deploys antigos)
+
+    Suporta ter varias URLs no mesmo arquivo (uma por rotina); o modo ativo
+    seleciona a sua. Assim 2 checkouts no mesmo servidor nao colidem.
+    """
+    webhooks = data.get("webhooks", {})
+    url = str(webhooks.get(mode_name) or webhooks.get("default") or "").strip()
+    if url:
+        return url
+    # Fallback legado: Windows Credential Manager
+    legacy = keyring.get_password(service_teams, "url")
+    return (legacy or "").strip()
+
+
 def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Config:
-    """Carrega configuração do TOML + secrets do Credential Manager.
+    """Carrega configuração do TOML + secrets.
 
-    Quais secrets sao exigidos depende do `[mode].name`:
-      - all          -> webhook + ppdm + tim
-      - veeam_ppdm   -> webhook + ppdm  (sem tim; le artefato do shared_dir)
-      - timeismoney  -> tim             (sem webhook nem ppdm; nao envia)
+    Mescla um `config.local.toml` opcional (mesma pasta, gitignored) por cima
+    do `config.toml` — use-o pra guardar as URLs reais dos webhooks (que contem
+    `sig=` secreto) fora do git.
 
-    `require_ppdm_password=False` continua suportado pra desenvolvimento, mas
-    a checagem efetiva eh feita por modo abaixo.
+    Webhook do Power Automate: vem de `[webhooks].<modo>` no config (ver
+    `_resolve_webhook`), com fallback pro keyring legado. Senhas (PPDM, TIM)
+    continuam no Windows Credential Manager via keyring.
+
+    `require_ppdm_password=False` continua suportado pra desenvolvimento.
     """
     if not path.exists():
         raise ConfigError(f"config.toml não encontrado em {path}")
 
     with path.open("rb") as f:
         data = tomllib.load(f)
+
+    # Override opcional fora do git (URLs reais, secrets): config.local.toml
+    local_path = path.with_name("config.local.toml")
+    if local_path.exists():
+        with local_path.open("rb") as f:
+            data = _deep_merge(data, tomllib.load(f))
 
     mode_data = data.get("mode", {})
     mode_name = mode_data.get("name", MODE_ALL)
@@ -150,15 +193,20 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
     service_ppdm = keyring_cfg.get("service_ppdm", "sure-backup-agent/ppdm")
     service_tim = keyring_cfg.get("service_timeismoney", "sure-backup-agent/timeismoney")
 
-    # Quais secrets exigir depende do modo. Cada modo POSTa pra um fluxo PA
-    # diferente, mas todos usam o mesmo NOME de secret (teams_webhook) — o
-    # VALOR muda por VM. Cada modo so exige os secrets das fontes que ele
-    # captura localmente (as outras vem do OneDrive via fluxo agregador).
-    needs_webhook = True
+    # Cada modo POSTa pro fluxo PA correspondente; a URL vem de [webhooks].<modo>
+    # (config.local.toml > config.toml > keyring legado). Senhas (PPDM/TIM) so
+    # sao exigidas pelas fontes que esse modo captura localmente.
     needs_ppdm = mode_name in (MODE_ALL, MODE_VEEAM_PPDM, MODE_PPDM) and require_ppdm_password
     needs_tim = mode_name in (MODE_ALL, MODE_TIMEISMONEY) and require_ppdm_password
 
-    webhook_url = _get_secret(service_teams, "url") if needs_webhook else ""
+    webhook_url = _resolve_webhook(data, mode_name, service_teams)
+    if not webhook_url:
+        raise ConfigError(
+            f"Webhook do Power Automate nao configurado pro modo '{mode_name}'. "
+            f"Preencha [webhooks].{mode_name} (ou [webhooks].default) no "
+            f"config.local.toml (recomendado, fora do git) ou no config.toml. "
+            f"Fallback legado: keyring '{service_teams}' username 'url'."
+        )
     ppdm_password = _get_secret(service_ppdm, data["ppdm"]["username"]) if needs_ppdm else ""
     tim_password = _get_secret(service_tim, data["timeismoney"]["username"]) if needs_tim else ""
 
