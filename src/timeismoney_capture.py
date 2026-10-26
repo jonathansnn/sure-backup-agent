@@ -5,7 +5,8 @@ Fluxo:
   2. Clica no radio "Usuario Admin" (texto, não input escondido)
   3. Preenche email + senha
   4. Clica Entrar
-  5. Aguarda /admin-dashboard carregar
+  5. Aguarda /admin-dashboard carregar — se a campanha do momento (ex.:
+     Outubro Rosa) aparecer na frente, clica "Entrar no TIM" antes
   6. 1º print — crop dinâmico: do topo da viewport até o card "Taxa de
      colaboradores ativos"
   7. 2º print — o card "Histórico de atividade" (gráfico de linhas), que fica
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,11 @@ RENDER_SETTLE_MS = 2500
 
 # Tempo extra apos rolar ate o grafico — ele so anima quando entra na viewport.
 CHART_SETTLE_MS = 1500
+
+# Campanha que o TIM intercala entre login e dashboard (ex.: Outubro Rosa,
+# 2026-10): rota propria e o CTA que leva ao dashboard. Ver _goto_dashboard.
+_CAMPAIGN_PATH = "/campanha/"
+_CAMPAIGN_CTA_TEXT = "Entrar no TIM"
 
 
 @dataclass(frozen=True)
@@ -101,15 +108,36 @@ def _login(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path]) -> Non
     # esperar por load state retorna na hora. Precisamos esperar a navegacao
     # interna do router; page.goto explicito perde o estado de sessao do SPA
     # e o guard manda de volta pra /login.
-    page.wait_for_url(f"**{cfg.dashboard_url.split('//', 1)[1].split('/', 1)[1]}**",
+    # A campanha (ver _goto_dashboard) pode vir direto no lugar do dashboard.
+    # Regex (e nao lambda) pra mensagem de timeout mostrar o que era esperado.
+    dashboard_path = cfg.dashboard_url.split('//', 1)[1].split('/', 1)[1]
+    page.wait_for_url(re.compile(f"{re.escape(dashboard_path)}|{_CAMPAIGN_PATH}"),
                       timeout=cfg.login_timeout_seconds * 1000)
     _maybe_save_step(page, debug_dir, "03_logged_in")
     logger.info("TimeIsMoney login OK (URL=%s)", page.url)
 
 
 def _goto_dashboard(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path]) -> None:
-    """Aguarda o anchor do dashboard ficar visivel — _login ja garantiu URL correta."""
-    page.get_by_text(cfg.bottom_anchor_text, exact=False).first.wait_for(state="visible")
+    """Aguarda o anchor do dashboard, passando pela campanha se ela aparecer.
+
+    O TIM mostra a campanha (ex.: Outubro Rosa) so "na 1a vez" — flag no
+    storage do browser. Cada execucao abre contexto limpo, entao pro agente eh
+    SEMPRE a 1a vez, e esperar so o anchor estourava em timeout.
+
+    Espera o que surgir PRIMEIRO na tela — anchor ou CTA da campanha — em vez
+    de checar a URL: em producao a URL ja eh /admin-dashboard e a campanha so
+    toma a tela depois, entao uma checagem de URL logo apos o login nao a ve.
+    Clica no CTA de texto em vez do X: o X eh so icone, sem texto pra casar.
+    """
+    anchor = page.get_by_text(cfg.bottom_anchor_text, exact=False).first
+    campaign_cta = page.get_by_text(_CAMPAIGN_CTA_TEXT, exact=False).first
+    anchor.or_(campaign_cta).first.wait_for(state="visible")
+    if campaign_cta.is_visible():
+        logger.info("TimeIsMoney campanha na frente do dashboard (URL=%s), pulando",
+                    page.url)
+        _maybe_save_step(page, debug_dir, "03a_campanha")
+        campaign_cta.click()
+        anchor.wait_for(state="visible")
     _maybe_save_step(page, debug_dir, "04_dashboard_loaded")
     logger.info("TimeIsMoney dashboard carregado")
 

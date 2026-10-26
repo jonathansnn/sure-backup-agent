@@ -7,6 +7,8 @@ os testes sao pulados (nao falham).
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from playwright.sync_api import sync_playwright
 
@@ -90,3 +92,100 @@ def test_chart_card_locator_resolves_card_not_the_title_element(page):
     assert card.locator("svg").count() == 1
     assert "Evolução de empresas" in card.inner_text()
 
+
+# --- Pagina de campanha entre o login e o dashboard -------------------------
+#
+# O TIM passou a mostrar a campanha Outubro Rosa logo apos o "Entrar" (2026-10).
+# Ela so aparece "na 1a vez" (flag guardada no browser); como o Playwright abre
+# contexto limpo a cada execucao, pro agente eh SEMPRE a 1a vez. Sem tratar, a
+# espera pela ancora do dashboard estourava e o TIM inteiro caia em timeout.
+#
+# Em producao a URL chega em /admin-dashboard e SO DEPOIS a campanha toma a
+# tela — checar a URL logo apos o login nao enxerga ela. O fake "atrasada"
+# reproduz exatamente isso.
+
+ANCORA = "Distribuição temporal detalhada"
+
+LOGIN_HTML = """
+<html><body>
+  <span>Usuário Empresa</span><span>Usuário Admin</span>
+  <input placeholder="Email"><input placeholder="Password">
+  <button onclick="location.href='{destino}'">Entrar</button>
+</body></html>
+"""
+
+CAMPANHA_HTML = """
+<html><body>
+  <h1>Conhecer o próprio corpo é o primeiro cuidado.</h1>
+  <a href="/admin-dashboard">Entrar no TIM &rarr;</a>
+</body></html>
+"""
+
+# /admin-dashboard que abre em branco (dashboard ainda nao renderizado) e,
+# 300ms depois, mostra a campanha; o dashboard so aparece apos clicar no CTA.
+# Igual ao visto em producao: a ancora NUNCA fica visivel antes da campanha.
+DASHBOARD_COM_CAMPANHA_ATRASADA_HTML = """
+<html><body>
+  <div id="campanha" style="display:none">
+    <h1>Outubro Rosa</h1>
+    <button onclick="campanha.remove(); dash.style.display='block'">Entrar no TIM</button>
+  </div>
+  <div id="dash" style="display:none">""" + DASHBOARD_HTML + """</div>
+  <script>
+    setTimeout(() => { campanha.style.display = 'block'; }, 300);
+  </script>
+</body></html>
+"""
+
+
+def _fake_tim(page, apos_login: str) -> None:
+    """Serve um TIM falso em https://tim.test, sem rede."""
+    paginas = {
+        "/login": LOGIN_HTML.format(destino=apos_login),
+        "/campanha/outubro-rosa": CAMPANHA_HTML,
+        "/admin-dashboard": DASHBOARD_HTML,
+        "/admin-dashboard-atrasada": DASHBOARD_COM_CAMPANHA_ATRASADA_HTML,
+    }
+
+    def handler(route):
+        path = "/" + route.request.url.split("//", 1)[1].split("/", 1)[1]
+        route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                      body=paginas[path])
+
+    page.route("https://tim.test/**", handler)
+
+
+@pytest.fixture
+def blank_page(browser):
+    pg = browser.new_page()
+    yield pg
+    pg.close()
+
+
+def _entrar(page, dashboard_url: str = "https://tim.test/admin-dashboard") -> None:
+    cfg = replace(_cfg(), bottom_anchor_text=ANCORA, dashboard_url=dashboard_url)
+    timeismoney_capture._login(page, cfg, debug_dir=None)
+    timeismoney_capture._goto_dashboard(page, cfg, debug_dir=None)
+
+
+def test_campaign_shown_late_on_dashboard_url_is_skipped(blank_page):
+    """Cenario de producao (2026-10-26): URL ja eh /admin-dashboard e a
+    campanha aparece depois. Antes, timeout esperando a ancora."""
+    _fake_tim(blank_page, apos_login="/admin-dashboard-atrasada")
+    _entrar(blank_page, dashboard_url="https://tim.test/admin-dashboard-atrasada")
+    assert blank_page.get_by_text(ANCORA).is_visible()
+    assert blank_page.get_by_text("Entrar no TIM").count() == 0
+
+
+def test_campaign_as_its_own_route_is_skipped(blank_page):
+    _fake_tim(blank_page, apos_login="/campanha/outubro-rosa")
+    _entrar(blank_page)
+    assert blank_page.url == "https://tim.test/admin-dashboard"
+    assert blank_page.get_by_text(ANCORA).is_visible()
+
+
+def test_without_campaign_goes_straight_to_dashboard(blank_page):
+    """Quando a campanha acabar, o fluxo antigo tem que continuar funcionando."""
+    _fake_tim(blank_page, apos_login="/admin-dashboard")
+    _entrar(blank_page)
+    assert blank_page.get_by_text(ANCORA).is_visible()
