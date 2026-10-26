@@ -115,7 +115,9 @@ def test_build_tim_only_payload_includes_only_tim_fields():
         timestamp=ts,
     )
     assert set(payload.keys()) == {
-        "timeismoney_image_b64", "timeismoney_error", "timestamp", "vm_hostname",
+        "timeismoney_image_b64", "timeismoney_error",
+        "timeismoney_chart_b64", "timeismoney_chart_error",
+        "timestamp", "vm_hostname",
     }
     assert payload["timeismoney_image_b64"] == base64.b64encode(b"\x89PNG_TIM").decode("ascii")
     assert payload["timeismoney_error"] == ""
@@ -133,6 +135,54 @@ def test_build_tim_only_payload_generates_error_png_on_failure():
     assert payload["timeismoney_image_b64"] != ""
     assert base64.b64decode(payload["timeismoney_image_b64"]).startswith(b"\x89PNG")
     assert payload["timeismoney_error"] == "timeout no admin-dashboard"
+
+
+def test_build_tim_only_payload_carries_chart_image():
+    """2o print (card 'Historico de atividade') vai num campo proprio."""
+    payload = teams_sender.build_tim_only_payload(
+        timeismoney_image=b"\x89PNG_TIM",
+        timeismoney_error=None,
+        timeismoney_chart_image=b"\x89PNG_CHART",
+        timeismoney_chart_error=None,
+        vm_hostname="VM-TIM",
+    )
+    assert payload["timeismoney_chart_b64"] == base64.b64encode(b"\x89PNG_CHART").decode("ascii")
+    assert payload["timeismoney_chart_error"] == ""
+
+
+def test_build_tim_only_payload_leaves_chart_empty_when_chart_failed():
+    """Politica escolhida: se SO o 2o print falha, manda o 1o e omite o 2o.
+
+    Diferente dos demais campos de imagem, `timeismoney_chart_b64` NAO recebe
+    PNG vermelho de erro — vem string vazia, e o Fluxo C' pula o anexo. O erro
+    fica em `timeismoney_chart_error` so pra diagnostico posterior.
+    """
+    payload = teams_sender.build_tim_only_payload(
+        timeismoney_image=b"\x89PNG_TIM",
+        timeismoney_error=None,
+        timeismoney_chart_image=None,
+        timeismoney_chart_error="card 'Historico de atividade' nao encontrado",
+        vm_hostname="VM-TIM",
+    )
+    # 1o print intacto
+    assert payload["timeismoney_image_b64"] == base64.b64encode(b"\x89PNG_TIM").decode("ascii")
+    assert payload["timeismoney_error"] == ""
+    # 2o print omitido (sem PNG vermelho), com o motivo preservado
+    assert payload["timeismoney_chart_b64"] == ""
+    assert payload["timeismoney_chart_error"] == "card 'Historico de atividade' nao encontrado"
+
+
+def test_build_payload_carries_chart_image_in_full_mode():
+    """Modo 'all' (single-server) tambem leva o 2o print do TIM."""
+    payload = teams_sender.build_payload(
+        veeam_image=b"v", veeam_error=None,
+        ppdm_image=b"p", ppdm_error=None,
+        timeismoney_image=b"t", timeismoney_error=None,
+        timeismoney_chart_image=b"\x89PNG_CHART", timeismoney_chart_error=None,
+        vm_hostname="SRVTIM",
+    )
+    assert payload["timeismoney_chart_b64"] == base64.b64encode(b"\x89PNG_CHART").decode("ascii")
+    assert payload["timeismoney_chart_error"] == ""
 
 
 # ---------- build_veeam_ppdm_payload (modo split: agregador V+P) ----------

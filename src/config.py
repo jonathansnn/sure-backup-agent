@@ -59,6 +59,9 @@ class TimeIsMoneyConfig:
     viewport_height: int
     bottom_anchor_text: str
     bottom_padding_px: int
+    # Titulo do card capturado no 2o print (faixa "Historico de atividade").
+    # Configuravel de proposito: essa tela ja mudou uma vez sem aviso.
+    chart_anchor_text: str = "Histórico de atividade"
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,9 @@ def load(path: Path = CONFIG_PATH, *, require_ppdm_password: bool = True) -> Con
             viewport_height=data["timeismoney"]["viewport_height"],
             bottom_anchor_text=data["timeismoney"]["bottom_anchor_text"],
             bottom_padding_px=data["timeismoney"]["bottom_padding_px"],
+            chart_anchor_text=data["timeismoney"].get(
+                "chart_anchor_text", "Histórico de atividade"
+            ),
         ),
         teams=TeamsConfig(
             webhook_url=webhook_url,

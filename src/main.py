@@ -87,13 +87,21 @@ def _capture_ppdm(cfg, log):
 
 
 def _capture_tim(cfg, log):
+    """Captura os 2 prints do TIM. Retorna TimCaptureResult (nao tupla)."""
     log.info("Capturando Time Is Money admin-dashboard...")
-    img, err = timeismoney_capture.capture(cfg.timeismoney)
-    if err:
-        log.error("TimeIsMoney captura falhou: %s", err)
+    result = timeismoney_capture.capture(cfg.timeismoney)
+    if result.error:
+        log.error("TimeIsMoney captura falhou: %s", result.error)
+        return result
+    log.info("TimeIsMoney captura OK: %d bytes", len(result.dashboard))
+    if result.chart:
+        log.info("TimeIsMoney 2o print (grafico) OK: %d bytes", len(result.chart))
     else:
-        log.info("TimeIsMoney captura OK: %d bytes", len(img))
-    return img, err
+        # A ausencia do 2o print eh silenciosa na mensagem do Teams (politica
+        # escolhida). Este WARNING no log eh o unico alerta que sobra.
+        log.warning("TimeIsMoney 2o print AUSENTE — mensagem vai so com o 1o: %s",
+                    result.chart_error)
+    return result
 
 
 def _send_and_finalize(cfg, log, payload, kind_label):
@@ -122,11 +130,12 @@ def _run_all(cfg, log):
     """Modo legado/single-server: 1 VM faz tudo, manda payload completo."""
     veeam_img, veeam_err = _capture_veeam(cfg, log)
     ppdm_img, ppdm_err = _capture_ppdm(cfg, log)
-    tim_img, tim_err = _capture_tim(cfg, log)
+    tim = _capture_tim(cfg, log)
     payload = teams_sender.build_payload(
         veeam_image=veeam_img, veeam_error=veeam_err,
         ppdm_image=ppdm_img, ppdm_error=ppdm_err,
-        timeismoney_image=tim_img, timeismoney_error=tim_err,
+        timeismoney_image=tim.dashboard, timeismoney_error=tim.error,
+        timeismoney_chart_image=tim.chart, timeismoney_chart_error=tim.chart_error,
         vm_hostname=socket.gethostname(),
     )
     return _send_and_finalize(cfg, log, payload, "full V+P+TIM")
@@ -134,9 +143,10 @@ def _run_all(cfg, log):
 
 def _run_timeismoney_producer(cfg, log):
     """Modo produtor TIM: captura e POSTa pro fluxo 'Store TIM Artifact'."""
-    tim_img, tim_err = _capture_tim(cfg, log)
+    tim = _capture_tim(cfg, log)
     payload = teams_sender.build_tim_only_payload(
-        timeismoney_image=tim_img, timeismoney_error=tim_err,
+        timeismoney_image=tim.dashboard, timeismoney_error=tim.error,
+        timeismoney_chart_image=tim.chart, timeismoney_chart_error=tim.chart_error,
         vm_hostname=socket.gethostname(),
     )
     return _send_and_finalize(cfg, log, payload, "TIM-only")

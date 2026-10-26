@@ -52,6 +52,10 @@ viewport_height = 1100
 bottom_anchor_text = "Taxa de colaboradores ativos"
 # padding generoso pra cobrir o numero grande abaixo do titulo do card
 bottom_padding_px = 120
+# 2o print: titulo do card do grafico, capturado inteiro (elemento, nao crop).
+# Fica abaixo da dobra — o Playwright rola ate ele sozinho. NAO aumente
+# viewport_height pra "alcancar" o card: isso reflui a pagina e muda o 1o print.
+chart_anchor_text = "Histórico de atividade"
 
 [teams]
 http_timeout_seconds = 30

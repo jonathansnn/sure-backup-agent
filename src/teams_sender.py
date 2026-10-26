@@ -6,9 +6,16 @@ Payload esperado pelo fluxo PA (todos os campos string; vazio = "ausente"):
         "veeam_error":     str,   # mensagem amigável ou ""
         "ppdm_image_b64":  str,   # base64 do PNG ou ""
         "ppdm_error":      str,   # mensagem amigável ou ""
+        "timeismoney_image_b64":   str,  # 1º print do TIM (topo do dashboard)
+        "timeismoney_error":       str,
+        "timeismoney_chart_b64":   str,  # 2º print do TIM (card "Histórico de atividade")
+        "timeismoney_chart_error": str,
         "timestamp":       str,   # ISO 8601 com offset (ex: "2026-05-16T08:00:00-03:00")
         "vm_hostname":     str,   # hostname da VM (ex: "SRVTIM")
     }
+
+ATENÇÃO — `timeismoney_chart_b64` é a ÚNICA imagem que pode vir vazia. Veja
+`_chart_fields()` pro porquê; o fluxo agregador precisa tratar esse caso.
 """
 from __future__ import annotations
 
@@ -37,6 +44,26 @@ class SendResult:
     attempts: int
 
 
+def _chart_fields(
+    chart_image: Optional[bytes], chart_error: Optional[str]
+) -> dict:
+    """Campos do 2º print do TIM (card "Histórico de atividade").
+
+    Política deliberadamente DIFERENTE dos outros campos de imagem: aqui a
+    falha NÃO vira PNG vermelho. Se o card não pôde ser capturado, o campo vai
+    vazio e o fluxo agregador simplesmente não anexa a 2ª imagem — o 1º print
+    (que funcionou) chega no Teams normalmente.
+
+    Consequência aceita conscientemente: a ausência é SILENCIOSA na mensagem.
+    Por isso o motivo fica preservado em `timeismoney_chart_error` — é o único
+    rastro pra diagnosticar depois, junto do log do agente.
+    """
+    return {
+        "timeismoney_chart_b64": base64.b64encode(chart_image).decode("ascii") if chart_image else "",
+        "timeismoney_chart_error": chart_error or "",
+    }
+
+
 def build_payload(
     veeam_image: Optional[bytes],
     veeam_error: Optional[str],
@@ -46,6 +73,8 @@ def build_payload(
     timeismoney_error: Optional[str],
     vm_hostname: str,
     timestamp: Optional[datetime] = None,
+    timeismoney_chart_image: Optional[bytes] = None,
+    timeismoney_chart_error: Optional[str] = None,
 ) -> dict:
     """Constrói o payload JSON.
 
@@ -74,6 +103,7 @@ def build_payload(
         "ppdm_error": ppdm_error or "",
         "timeismoney_image_b64": base64.b64encode(tim_bytes).decode("ascii"),
         "timeismoney_error": timeismoney_error or "",
+        **_chart_fields(timeismoney_chart_image, timeismoney_chart_error),
         "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
         "vm_hostname": vm_hostname,
     }
@@ -84,6 +114,8 @@ def build_tim_only_payload(
     timeismoney_error: Optional[str],
     vm_hostname: str,
     timestamp: Optional[datetime] = None,
+    timeismoney_chart_image: Optional[bytes] = None,
+    timeismoney_chart_error: Optional[str] = None,
 ) -> dict:
     """Payload pro Fluxo B (Store TIM Artifact) — modo='timeismoney'.
 
@@ -100,6 +132,7 @@ def build_tim_only_payload(
     return {
         "timeismoney_image_b64": base64.b64encode(tim_bytes).decode("ascii"),
         "timeismoney_error": timeismoney_error or "",
+        **_chart_fields(timeismoney_chart_image, timeismoney_chart_error),
         "timestamp": ts_utc_bare.isoformat(timespec="seconds"),
         "vm_hostname": vm_hostname,
     }

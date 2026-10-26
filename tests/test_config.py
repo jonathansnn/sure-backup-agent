@@ -302,6 +302,34 @@ def test_webhook_raises_when_nowhere(mocker, tmp_path):
         cfg.load(path=path, require_ppdm_password=False)
 
 
+# ---------- chart_anchor_text (ancora do 2o print do TIM) ----------
+
+def test_chart_anchor_text_has_default_when_absent_from_toml(mocker, tmp_path):
+    """config.toml antigo (sem a chave) continua carregando — retrocompat."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml(tmp_path)  # fixture NAO tem chart_anchor_text
+    mocker.patch("src.config.keyring.get_password", return_value="x")
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.timeismoney.chart_anchor_text == "Histórico de atividade"
+
+
+def test_chart_anchor_text_read_from_toml(mocker, tmp_path):
+    """A ancora e configuravel: a tela do TIM ja mudou uma vez."""
+    mocker.patch("src.config.PROJECT_ROOT", tmp_path)
+    path = _write_toml(tmp_path)
+    # injeta na secao [timeismoney] existente (TOML nao aceita tabela duplicada)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "bottom_padding_px = 60",
+            'bottom_padding_px = 60\n        chart_anchor_text = "Evolução mensal"',
+        ),
+        encoding="utf-8",
+    )
+    mocker.patch("src.config.keyring.get_password", return_value="x")
+    c = cfg.load(path=path, require_ppdm_password=False)
+    assert c.timeismoney.chart_anchor_text == "Evolução mensal"
+
+
 def test_load_raises_when_toml_missing(tmp_path):
     with pytest.raises(cfg.ConfigError, match="não encontrado"):
         cfg.load(path=tmp_path / "nope.toml")

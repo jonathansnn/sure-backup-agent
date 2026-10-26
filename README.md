@@ -1,6 +1,6 @@
 # sure-backup-agent
 
-Automação Python que captura screenshots diários dos consoles de backup (Veeam B&R, Dell PowerProtect Data Manager) e do dashboard administrativo do Time Is Money, e posta os 3 prints num canal do Microsoft Teams via Power Automate — todo dia útil às 08:00 BRT.
+Automação Python que captura screenshots diários dos consoles de backup (Veeam B&R, Dell PowerProtect Data Manager) e do dashboard administrativo do Time Is Money, e posta os prints num canal do Microsoft Teams via Power Automate — todo dia útil às 08:00 BRT.
 
 Substitui a rotina manual diária do time de infraestrutura sem alterar o formato visual que a diretoria já consome.
 
@@ -34,8 +34,8 @@ Todo dia útil de manhã, o responsável pela infra precisava:
 1. Logar numa VM Windows com acesso aos consoles de backup
 2. Tirar print da tela de jobs no **Veeam Backup & Replication Console** (app desktop)
 3. Logar no **PPDM** (web), navegar até Jobs > Protection Jobs com filtro 24h, tirar print
-4. Logar no **Time Is Money** (web SaaS), abrir o admin-dashboard, tirar print
-5. Postar os 3 prints num canal do Teams pra diretoria acompanhar
+4. Logar no **Time Is Money** (web SaaS), abrir o admin-dashboard, tirar print do topo e do card "Histórico de atividade"
+5. Postar os prints num canal do Teams pra diretoria acompanhar
 
 Quando a pessoa ficava indisponível (férias, doença), a diretoria estranhava a ausência. O `sure-backup-agent` automatiza essa rotina exata — sem mudar o formato — pra que a entrega aconteça sem depender de presença humana.
 
@@ -183,6 +183,7 @@ viewport_width = 1600
 viewport_height = 1100           # alta o bastante pro anchor + valores
 bottom_anchor_text = "Taxa de colaboradores ativos"
 bottom_padding_px = 120
+chart_anchor_text = "Histórico de atividade"   # 2o print: o card do gráfico
 
 [teams]
 http_timeout_seconds = 30
@@ -248,6 +249,8 @@ Resumo do schema esperado pelo trigger HTTP:
     "ppdm_error":           { "type": "string" },
     "timeismoney_image_b64":{ "type": "string" },
     "timeismoney_error":    { "type": "string" },
+    "timeismoney_chart_b64":  { "type": "string" },
+    "timeismoney_chart_error":{ "type": "string" },
     "timestamp":            { "type": "string" },
     "vm_hostname":          { "type": "string" }
   },
@@ -258,6 +261,7 @@ Resumo do schema esperado pelo trigger HTTP:
 Convenções do payload:
 
 - `*_image_b64` **sempre** contém base64 de PNG válido. Em caso de falha da captura, o Python gera um PNG vermelho com a mensagem de erro via [`src/image_utils.py`](src/image_utils.py) (`render_error_png`). Isso satisfaz o requisito do `hostedContents` do Graph (que rejeita `contentBytes` vazio).
+- **Exceção única:** `timeismoney_chart_b64` (2º print do TIM, o card "Histórico de atividade") **pode vir vazio**. Se só ele falhar, o agente manda o 1º print normalmente e omite o 2º — sem PNG vermelho e sem aviso na mensagem. O motivo fica em `timeismoney_chart_error` e no `agent.log`. O fluxo agregador precisa tratar o caso vazio (ver [docs/multi-server-pa-flows.md](docs/multi-server-pa-flows.md)).
 - `*_error` é o **sinal canônico de sucesso/falha**: string vazia = OK, não-vazia = falha (mensagem curta).
 - `timestamp` é **UTC bare** (`"2026-05-18T08:00:00"`, sem offset). O `formatDateTime(addHours(triggerBody()?['timestamp'], -3), 'dd/MM/yyyy HH:mm')` no PA converte pra BRT.
 
@@ -419,7 +423,11 @@ Get-ScheduledTaskInfo -TaskName "Sure Backup Agent - Daily Report" | Format-List
 - Login web em Angular Reactive Form.
 - **Ordem importa:** fill email + password **antes** de clicar no radio "Usuário Admin". Clicar no radio re-binda o form do Angular e zera o password se o fill foi feito antes do binding completar (race condition observado).
 - Usa `wait_for_url("**/admin-dashboard**")` em vez de `wait_for_load_state("domcontentloaded")` — a navegação do SPA é interna ao router, não dispara load real. Fazer `page.goto` explícito pra forçar o redirect quebra o auth state e o router manda de volta pra /login.
-- Capture ancorado no texto **"Taxa de colaboradores ativos"** (último card visível) — clipa do topo da viewport até `anchor.y + height + padding`.
+- **1º print:** capture ancorado no texto **"Taxa de colaboradores ativos"** (último card visível) — clipa do topo da viewport até `anchor.y + height + padding`.
+- **2º print:** o card **"Histórico de atividade"** inteiro, via `locator.screenshot()` (não `page.screenshot(clip=)`). O card fica abaixo da dobra e o `clip` é clampado pela viewport — recorte por coordenada sairia cortado **sem erro**. O `locator.screenshot()` rola até o elemento sozinho. Por isso **não** se aumenta `viewport_height` pra "alcançar" o card: isso reflui a página e mudaria o 1º print.
+- O card é localizado a partir do título pelo ancestral mais próximo que já contém um gráfico: `ancestor::*[.//*[local-name()='canvas' or local-name()='svg']][1]`. Evita depender de classe CSS. Calibrar com `python -m scripts.tim_explore`.
+- **Duas armadilhas já pagas** nesse seletor: (1) a busca do título usa `exact=True` — com substring, `"Histórico de atividade"` casa também com o tile **"COM HISTÓRICO DE ATIVIDADE"**, que vem antes no DOM e sequestra o `.first`; (2) `local-name()` em vez de `.//svg` — `<svg>` está no namespace SVG e XPath 1.0 nunca casaria com o nome sem prefixo. Ambas cobertas por [`tests/test_timeismoney_capture.py`](tests/test_timeismoney_capture.py), que roda contra HTML local (sem rede/credencial).
+- Falha só do 2º print **não** aborta o 1º: `capture()` devolve `TimCaptureResult(dashboard, chart, error, chart_error)` com os dois erros separados.
 
 ## Tratamento de falhas
 
