@@ -41,6 +41,14 @@ CHART_SETTLE_MS = 1500
 _CAMPAIGN_PATH = "/campanha/"
 _CAMPAIGN_CTA_TEXT = "Entrar no TIM"
 
+# Quanto esperar o painel carregar apos o CTA da campanha antes de concluir
+# que travou e re-entrar pelo menu. Normal eh ~1s (medido 2026-11-03).
+CAMPAIGN_STUCK_MS = 10_000
+
+
+class TimLoginRejected(Exception):
+    """A API de login do TIM recusou (429, 401...) — a tela nao mostra erro."""
+
 
 @dataclass(frozen=True)
 class TimCaptureResult:
@@ -77,8 +85,15 @@ def capture(cfg: TimeIsMoneyConfig, debug_dir: Optional[Path] = None) -> TimCapt
                 # ficar byte-a-byte equivalente ao que era antes desta feature.
                 chart_png, chart_err = _try_screenshot_chart_card(page, cfg, debug_dir)
                 return TimCaptureResult(png, chart_png, None, chart_err)
+            except Exception:
+                # Print do estado NA HORA da falha — antes o ultimo era o do
+                # passo anterior, que nao mostra onde a pagina parou.
+                _maybe_save_step(page, debug_dir, "99_FAIL")
+                raise
             finally:
                 browser.close()
+    except TimLoginRejected as exc:
+        return TimCaptureResult(None, None, f"TimeIsMoney login recusado: {exc}", None)
     except PlaywrightTimeout as exc:
         return TimCaptureResult(None, None, f"TimeIsMoney timeout: {exc}", None)
     except Exception as exc:
@@ -103,6 +118,12 @@ def _login(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path]) -> Non
     page.get_by_text("Usuário Admin", exact=True).click()
     _maybe_save_step(page, debug_dir, "02_credentials_filled")
 
+    # Guarda o status da API de login: se ela recusar, a tela do TIM nao mostra
+    # erro nenhum e o unico sintoma seria o timeout generico abaixo.
+    auth_statuses: list[int] = []
+    page.on("response", lambda r: auth_statuses.append(r.status)
+            if "/auth/" in r.url and r.request.method == "POST" else None)
+
     page.get_by_role("button", name="Entrar", exact=False).click()
     # SPA Angular: domcontentloaded ja disparou ao carregar /login, entao
     # esperar por load state retorna na hora. Precisamos esperar a navegacao
@@ -111,10 +132,28 @@ def _login(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path]) -> Non
     # A campanha (ver _goto_dashboard) pode vir direto no lugar do dashboard.
     # Regex (e nao lambda) pra mensagem de timeout mostrar o que era esperado.
     dashboard_path = cfg.dashboard_url.split('//', 1)[1].split('/', 1)[1]
-    page.wait_for_url(re.compile(f"{re.escape(dashboard_path)}|{_CAMPAIGN_PATH}"),
-                      timeout=cfg.login_timeout_seconds * 1000)
+    try:
+        page.wait_for_url(re.compile(f"{re.escape(dashboard_path)}|{_CAMPAIGN_PATH}"),
+                          timeout=cfg.login_timeout_seconds * 1000)
+    except PlaywrightTimeout:
+        rejected = next((s for s in reversed(auth_statuses) if s >= 400), None)
+        if rejected is not None:
+            raise TimLoginRejected(_login_rejected_message(rejected)) from None
+        raise
     _maybe_save_step(page, debug_dir, "03_logged_in")
     logger.info("TimeIsMoney login OK (URL=%s)", page.url)
+
+
+def _login_rejected_message(status: int) -> str:
+    if status == 429:
+        # Visto em 2026-11-03: ~7 logins em ~10 min bloqueiam a CONTA (nao o
+        # IP) — rodar o agente de novo na sequencia so prolonga o bloqueio.
+        return ("TIM bloqueou o login por excesso de tentativas (HTTP 429). "
+                "Nao eh senha errada: espere ~30 min antes de rodar de novo.")
+    if status in (401, 403):
+        return (f"TIM recusou usuario/senha (HTTP {status}). "
+                "Confira a senha no keyring (sure-backup-agent/timeismoney).")
+    return f"API de login do TIM respondeu HTTP {status}."
 
 
 def _goto_dashboard(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path]) -> None:
@@ -137,7 +176,18 @@ def _goto_dashboard(page: Page, cfg: TimeIsMoneyConfig, debug_dir: Optional[Path
                     page.url)
         _maybe_save_step(page, debug_dir, "03a_campanha")
         campaign_cta.click()
-        anchor.wait_for(state="visible")
+        try:
+            anchor.wait_for(state="visible", timeout=CAMPAIGN_STUCK_MS)
+        except PlaywrightTimeout:
+            # Novembro Azul (2026-11-03): o CTA leva ao /admin-dashboard, mas o
+            # painel fica preso em "Carregando indicadores..." com todas as APIs
+            # em 200 — bug do proprio TIM. Re-entrar pelo item "Dashboard" do
+            # menu (navegacao do SPA, mantem a sessao) destrava.
+            logger.warning("TimeIsMoney painel travado apos campanha (URL=%s), "
+                           "re-entrando pelo menu Dashboard", page.url)
+            _maybe_save_step(page, debug_dir, "03b_painel_travado")
+            page.get_by_text("Dashboard", exact=True).first.click()
+            anchor.wait_for(state="visible")
     _maybe_save_step(page, debug_dir, "04_dashboard_loaded")
     logger.info("TimeIsMoney dashboard carregado")
 

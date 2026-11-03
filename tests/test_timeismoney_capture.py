@@ -137,6 +137,24 @@ DASHBOARD_COM_CAMPANHA_ATRASADA_HTML = """
 </body></html>
 """
 
+# Novembro Azul (2026-11-03): o CTA leva ao /admin-dashboard, mas o painel
+# fica preso em "Carregando indicadores..." (todas as APIs 200 — bug do TIM).
+# So destrava re-entrando pelo item "Dashboard" do menu.
+DASHBOARD_TRAVA_APOS_CAMPANHA_HTML = """
+<html><body>
+  <nav><a href="#" onclick="carregando.remove(); dash.style.display='block'; return false">Dashboard</a></nav>
+  <div id="campanha" style="display:none">
+    <h1>Novembro Azul</h1>
+    <button onclick="campanha.remove(); carregando.style.display='block'">Entrar no TIM</button>
+  </div>
+  <div id="carregando" style="display:none">Carregando indicadores do painel admin...</div>
+  <div id="dash" style="display:none">""" + DASHBOARD_HTML + """</div>
+  <script>
+    setTimeout(() => { campanha.style.display = 'block'; }, 300);
+  </script>
+</body></html>
+"""
+
 
 def _fake_tim(page, apos_login: str) -> None:
     """Serve um TIM falso em https://tim.test, sem rede."""
@@ -145,6 +163,7 @@ def _fake_tim(page, apos_login: str) -> None:
         "/campanha/outubro-rosa": CAMPANHA_HTML,
         "/admin-dashboard": DASHBOARD_HTML,
         "/admin-dashboard-atrasada": DASHBOARD_COM_CAMPANHA_ATRASADA_HTML,
+        "/admin-dashboard-trava": DASHBOARD_TRAVA_APOS_CAMPANHA_HTML,
     }
 
     def handler(route):
@@ -177,6 +196,15 @@ def test_campaign_shown_late_on_dashboard_url_is_skipped(blank_page):
     assert blank_page.get_by_text("Entrar no TIM").count() == 0
 
 
+def test_dashboard_stuck_after_campaign_cta_is_reentered_via_menu(blank_page, monkeypatch):
+    """Cenario de producao (2026-11-03, Novembro Azul): o CTA funciona, mas o
+    painel nao sai do "Carregando". Antes, timeout esperando a ancora."""
+    monkeypatch.setattr(timeismoney_capture, "CAMPAIGN_STUCK_MS", 500)
+    _fake_tim(blank_page, apos_login="/admin-dashboard-trava")
+    _entrar(blank_page, dashboard_url="https://tim.test/admin-dashboard-trava")
+    assert blank_page.get_by_text(ANCORA).is_visible()
+
+
 def test_campaign_as_its_own_route_is_skipped(blank_page):
     _fake_tim(blank_page, apos_login="/campanha/outubro-rosa")
     _entrar(blank_page)
@@ -189,3 +217,46 @@ def test_without_campaign_goes_straight_to_dashboard(blank_page):
     _fake_tim(blank_page, apos_login="/admin-dashboard")
     _entrar(blank_page)
     assert blank_page.get_by_text(ANCORA).is_visible()
+
+
+# --- Login recusado pela API --------------------------------------------------
+#
+# Quando a API de login recusa (429 por excesso de tentativas, 401 senha), a
+# tela do TIM NAO mostra erro nenhum: fica parada no /login. Antes isso virava
+# um "timeout esperando admin-dashboard" generico no Teams (2026-11-03).
+
+LOGIN_COM_API_HTML = """
+<html><body>
+  <span>Usuário Empresa</span><span>Usuário Admin</span>
+  <input placeholder="Email"><input placeholder="Password">
+  <button onclick="fetch('/v1/auth/admin', {method: 'POST'})">Entrar</button>
+</body></html>
+"""
+
+
+def _fake_tim_login_recusado(page, status: int, body: str) -> None:
+    def handler(route):
+        if "/v1/auth/" in route.request.url:
+            route.fulfill(status=status, content_type="application/json", body=body)
+        else:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                          body=LOGIN_COM_API_HTML)
+
+    page.route("https://tim.test/**", handler)
+
+
+def test_login_rate_limited_says_so_instead_of_generic_timeout(blank_page):
+    _fake_tim_login_recusado(
+        blank_page, 429, '{"status":429,"message":"Muitas tentativas. Tente novamente mais tarde."}')
+    cfg = replace(_cfg(), login_timeout_seconds=1)
+    with pytest.raises(timeismoney_capture.TimLoginRejected, match="429") as exc:
+        timeismoney_capture._login(blank_page, cfg, debug_dir=None)
+    assert "excesso de tentativas" in str(exc.value)
+
+
+def test_login_wrong_password_says_so(blank_page):
+    _fake_tim_login_recusado(blank_page, 401, '{"status":401,"message":"Unauthorized"}')
+    cfg = replace(_cfg(), login_timeout_seconds=1)
+    with pytest.raises(timeismoney_capture.TimLoginRejected, match="401") as exc:
+        timeismoney_capture._login(blank_page, cfg, debug_dir=None)
+    assert "senha" in str(exc.value)
